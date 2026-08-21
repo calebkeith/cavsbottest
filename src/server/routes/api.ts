@@ -1,0 +1,375 @@
+import { Hono } from 'hono';
+import { context, redis, reddit } from '@devvit/web/server';
+import { cavsBotApi } from '../core/cavs-api';
+import { testBoxScore, testGame } from '../core/test-game';
+import { testPlayByPlay } from '../core/test-play-by-play';
+import type {
+  DecrementResponse,
+  IncrementResponse,
+  InitResponse,
+} from '../../shared/api';
+
+type ErrorResponse = {
+  status: 'error';
+  message: string;
+};
+
+const THREAD_DATA_CACHE_PREFIX = 'cavsbot:thread-data:v2:';
+export const threadDataCacheKey = (gameId: string, threadType: string) => `${THREAD_DATA_CACHE_PREFIX}${gameId}:${threadType}`;
+export const threadCoreCacheKey = (gameId: string, threadType: string) => `${threadDataCacheKey(gameId, threadType)}:core`;
+export const threadInsightsCacheKey = (gameId: string, threadType: string) => `${threadDataCacheKey(gameId, threadType)}:insights`;
+export const threadInsightSectionCacheKey = (gameId: string, threadType: string, section: string) => `${threadDataCacheKey(gameId, threadType)}:insights:${section}`;
+export const threadCacheGenerationKey = (gameId: string, threadType: string) => `${threadDataCacheKey(gameId, threadType)}:generation`;
+const cacheTtlSeconds = (threadType: string) => threadType === 'game' ? 60 : 24 * 60 * 60;
+const coreCacheTtlSeconds = (threadType: string) => threadType === 'game' ? 45 : 24 * 60 * 60;
+const insightCacheTtlSeconds = (threadType: string) => threadType === 'game' ? 5 * 60 : 24 * 60 * 60;
+const seasonFromStartTime = (startTime: string) => {
+  const date = new Date(startTime);
+  const startYear = date.getUTCMonth() >= 9 ? date.getUTCFullYear() : date.getUTCFullYear() - 1;
+  return `${startYear}-${String(startYear + 1).slice(-2)}`;
+};
+const timed = async <T,>(label: string, task: Promise<T>) => {
+  const startedAt = Date.now();
+  try {
+    return await task;
+  } finally {
+    console.log(`[thread-timing] ${label} ${Date.now() - startedAt}ms`);
+  }
+};
+
+export const api = new Hono();
+
+const threadContext = () => {
+  const postData = context.postData;
+  const gameId = typeof postData?.gameId === 'string' ? postData.gameId : undefined;
+  const threadType = typeof postData?.threadType === 'string' ? postData.threadType : 'game';
+  return { postData, gameId, threadType, isTestFixture: postData?.testFixture === true || gameId === testBoxScore.gameId };
+};
+
+api.get('/thread/core', async (c) => {
+  const startedAt = Date.now();
+  const { postData, gameId, threadType, isTestFixture } = threadContext();
+  if (!gameId) return c.json<ErrorResponse>({ status: 'error', message: 'This post is not linked to a game' }, 400);
+  const fullCacheKey = threadDataCacheKey(gameId, threadType);
+  const cacheKey = threadCoreCacheKey(gameId, threadType);
+
+  try {
+    const generation = await redis.get(threadCacheGenerationKey(gameId, threadType));
+    const cachedFull = await redis.get(fullCacheKey);
+    if (cachedFull) {
+      console.log(`[thread-cache] hit ${fullCacheKey}`);
+      return c.json({ ...JSON.parse(cachedFull), insightsReady: true });
+    }
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      console.log(`[thread-cache] hit ${cacheKey}`);
+      return c.json({ ...JSON.parse(cached), insightsReady: false });
+    }
+    console.log(`[thread-cache] miss ${cacheKey}`);
+    const [boxScore, playByPlay, game] = await Promise.all([
+      timed('boxscore', isTestFixture ? cavsBotApi.boxScore(gameId).catch(() => testBoxScore) : cavsBotApi.boxScore(gameId)),
+      timed('playbyplay', isTestFixture ? cavsBotApi.playByPlay(gameId).catch(() => testPlayByPlay) : cavsBotApi.playByPlay(gameId)),
+      timed('game', isTestFixture ? cavsBotApi.game(gameId).catch(() => testGame) : cavsBotApi.game(gameId)),
+    ]);
+    const response = { gameId, threadType, seasonType: postData?.seasonType ?? 2, boxScore, playByPlay, game, records: { visitor: null, home: null }, standings: [], recentForm: [], matchups: [], fourFactors: null, insightsReady: false, fetchedAt: new Date().toISOString() };
+    try {
+      if (await redis.get(threadCacheGenerationKey(gameId, threadType)) !== generation) {
+        console.log(`[thread-cache] discarded stale core response ${cacheKey}`);
+      } else {
+        await redis.set(cacheKey, JSON.stringify(response));
+        await redis.expire(cacheKey, coreCacheTtlSeconds(threadType));
+      }
+    } catch (error) {
+      console.warn(`Thread core cache write failed for game ${gameId}:`, error);
+    }
+    return c.json(response);
+  } catch (error) {
+    console.error(`Thread core data error for game ${gameId}:`, error);
+    return c.json<ErrorResponse>({ status: 'error', message: 'Unable to load game data' }, 502);
+  } finally {
+    console.log(`[thread-timing] total-core ${Date.now() - startedAt}ms`);
+  }
+});
+
+api.get('/thread/insights', async (c) => {
+  const startedAt = Date.now();
+  const { postData, gameId, threadType, isTestFixture } = threadContext();
+  if (!gameId) return c.json<ErrorResponse>({ status: 'error', message: 'This post is not linked to a game' }, 400);
+  const visitorTeamId = Number(c.req.query('visitorTeamId'));
+  const homeTeamId = Number(c.req.query('homeTeamId'));
+  if (!Number.isInteger(visitorTeamId) || !Number.isInteger(homeTeamId)) return c.json<ErrorResponse>({ status: 'error', message: 'Team ids are required' }, 400);
+  const cacheKey = threadInsightsCacheKey(gameId, threadType);
+
+  try {
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      console.log(`[thread-cache] hit ${cacheKey}`);
+      return c.json({ ...JSON.parse(cached), insightsReady: true });
+    }
+    console.log(`[thread-cache] miss ${cacheKey}`);
+    const matchupSeasonType = postData?.seasonType === 2 || postData?.seasonType === 3 ? 3 : undefined;
+    const pastMatchups = (team: number, opponent: number) => cavsBotApi.request<typeof testGame[]>(`/api/v1/teams/${encodeURIComponent(String(team))}/matchups/${encodeURIComponent(String(opponent))}/past`, { count: 10, seasonType: matchupSeasonType });
+    const teams = [{ id: visitorTeamId, abbreviation: 'CLE' }, { id: homeTeamId, abbreviation: 'OPP' }];
+    const gameSeason = c.req.query('season') ?? '2025-26';
+    const enrichment = await Promise.allSettled([
+      ...teams.map((team) => timed(`record-${team.abbreviation}`, isTestFixture ? cavsBotApi.record(String(team.id)).catch(() => ({ team: team.abbreviation, record: null, wins: '0', losses: '0' })) : cavsBotApi.record(String(team.id)))),
+      timed('standings', isTestFixture ? cavsBotApi.standings().catch(() => []) : cavsBotApi.standings()),
+      timed('recent-form', isTestFixture ? cavsBotApi.recentForm(String(visitorTeamId), 5).catch(() => []) : cavsBotApi.recentForm(String(visitorTeamId), 5)),
+      isTestFixture ? timed('past-matchups', pastMatchups(visitorTeamId, homeTeamId).catch(() => [testGame])) : timed('past-matchups', pastMatchups(visitorTeamId, homeTeamId)),
+      timed(`four-factors-${gameSeason}`, isTestFixture ? cavsBotApi.teamFourFactors(String(visitorTeamId), { season: gameSeason }).catch(() => null) : cavsBotApi.teamFourFactors(String(visitorTeamId), { season: gameSeason })),
+    ]);
+    const enrichmentValue = <T,>(index: number, fallback: T) => {
+      const result = enrichment[index];
+      return result?.status === 'fulfilled' ? result.value as T : fallback;
+    };
+    const response = { records: { visitor: enrichmentValue(0, null), home: enrichmentValue(1, null) }, standings: enrichmentValue(2, []), recentForm: enrichmentValue(3, []), matchups: enrichmentValue(4, [] as typeof testGame[]).filter((matchup) => matchup.seasonType !== 2), fourFactors: enrichmentValue(5, null), insightsReady: true };
+    try {
+      await redis.set(cacheKey, JSON.stringify(response));
+      await redis.expire(cacheKey, insightCacheTtlSeconds(threadType));
+    } catch (error) {
+      console.warn(`Thread insights cache write failed for game ${gameId}:`, error);
+    }
+    return c.json(response);
+  } catch (error) {
+    console.error(`Thread insights error for game ${gameId}:`, error);
+    return c.json<ErrorResponse>({ status: 'error', message: 'Unable to load game insights' }, 502);
+  } finally {
+    console.log(`[thread-timing] total-insights ${Date.now() - startedAt}ms`);
+  }
+});
+
+api.get('/thread/insight', async (c) => {
+  const startedAt = Date.now();
+  const { postData, gameId, threadType, isTestFixture } = threadContext();
+  if (!gameId) return c.json<ErrorResponse>({ status: 'error', message: 'This post is not linked to a game' }, 400);
+  const section = c.req.query('section');
+  const validSections = ['records', 'standings', 'recent-form', 'past-matchups', 'four-factors'] as const;
+  if (!section || !validSections.includes(section as typeof validSections[number])) return c.json<ErrorResponse>({ status: 'error', message: 'Unknown insight section' }, 400);
+  const visitorTeamId = Number(c.req.query('visitorTeamId'));
+  const homeTeamId = Number(c.req.query('homeTeamId'));
+  if (!Number.isInteger(visitorTeamId) || !Number.isInteger(homeTeamId)) return c.json<ErrorResponse>({ status: 'error', message: 'Team ids are required' }, 400);
+  const cacheKey = threadInsightSectionCacheKey(gameId, threadType, section);
+  const sectionCacheKey = section === 'four-factors'
+    ? threadInsightSectionCacheKey(gameId, threadType, 'four-factors-v3')
+    : cacheKey;
+
+  try {
+    const generation = await redis.get(threadCacheGenerationKey(gameId, threadType));
+    const cached = await redis.get(sectionCacheKey);
+    if (cached) {
+      console.log(`[thread-cache] hit ${sectionCacheKey}`);
+      return c.json(JSON.parse(cached));
+    }
+    console.log(`[thread-cache] miss ${sectionCacheKey}`);
+    const matchupSeasonType = postData?.seasonType === 2 || postData?.seasonType === 3 ? 3 : undefined;
+    const gameSeason = c.req.query('season') ?? '2025-26';
+    let response: Record<string, unknown>;
+    if (section === 'records') {
+      const [visitor, home] = await Promise.all([
+        timed('record-CLE', isTestFixture ? cavsBotApi.record(String(visitorTeamId)).catch(() => null) : cavsBotApi.record(String(visitorTeamId))),
+        timed('record-OPP', isTestFixture ? cavsBotApi.record(String(homeTeamId)).catch(() => null) : cavsBotApi.record(String(homeTeamId))),
+      ]);
+      response = { records: { visitor, home } };
+    } else if (section === 'standings') {
+      response = { standings: await timed('standings', isTestFixture ? cavsBotApi.standings().catch(() => []) : cavsBotApi.standings()) };
+    } else if (section === 'recent-form') {
+      response = { recentForm: await timed('recent-form', isTestFixture ? cavsBotApi.recentForm(String(visitorTeamId), 5).catch(() => []) : cavsBotApi.recentForm(String(visitorTeamId), 5)) };
+    } else if (section === 'past-matchups') {
+      const matchups = await timed('past-matchups', isTestFixture
+        ? cavsBotApi.request<typeof testGame[]>(`/api/v1/teams/${visitorTeamId}/matchups/${homeTeamId}/past`, { count: 10, seasonType: matchupSeasonType }).catch(() => [testGame])
+        : cavsBotApi.request<typeof testGame[]>(`/api/v1/teams/${visitorTeamId}/matchups/${homeTeamId}/past`, { count: 10, seasonType: matchupSeasonType }));
+      response = { matchups: matchups.filter((matchup) => matchup.seasonType !== 2) };
+    } else {
+      const clevelandTeamId = Number(c.req.query('clevelandTeamId'));
+      if (!Number.isInteger(clevelandTeamId) || (clevelandTeamId !== visitorTeamId && clevelandTeamId !== homeTeamId)) return c.json<ErrorResponse>({ status: 'error', message: 'Cleveland team id is required' }, 400);
+      const [opponent, cavaliers] = await Promise.all([
+        timed(`four-factors-${visitorTeamId}`, isTestFixture ? cavsBotApi.teamFourFactors(String(visitorTeamId), { season: gameSeason }).catch(() => null) : cavsBotApi.teamFourFactors(String(visitorTeamId), { season: gameSeason })),
+        timed(`four-factors-${homeTeamId}`, isTestFixture ? cavsBotApi.teamFourFactors(String(homeTeamId), { season: gameSeason }).catch(() => null) : cavsBotApi.teamFourFactors(String(homeTeamId), { season: gameSeason })),
+      ]);
+      response = { fourFactors: { cleveland: clevelandTeamId === visitorTeamId ? opponent : cavaliers, opponent: clevelandTeamId === visitorTeamId ? cavaliers : opponent } };
+    }
+    if (await redis.get(threadCacheGenerationKey(gameId, threadType)) !== generation) {
+      console.log(`[thread-cache] discarded stale ${section} response ${sectionCacheKey}`);
+    } else {
+      await redis.set(sectionCacheKey, JSON.stringify(response));
+      await redis.expire(sectionCacheKey, insightCacheTtlSeconds(threadType));
+    }
+    return c.json(response);
+  } catch (error) {
+    console.error(`Thread insight section ${section} failed for game ${gameId}:`, error);
+    return c.json<ErrorResponse>({ status: 'error', message: 'Unable to load insight section' }, 502);
+  } finally {
+    console.log(`[thread-timing] ${section ?? 'unknown'}-total ${Date.now() - startedAt}ms`);
+  }
+});
+
+api.get('/thread', async (c) => {
+  const postData = context.postData;
+  const gameId = typeof postData?.gameId === 'string' ? postData.gameId : undefined;
+  if (!gameId) return c.json<ErrorResponse>({ status: 'error', message: 'This post is not linked to a game' }, 400);
+  const isTestFixture = postData?.testFixture === true || gameId === testBoxScore.gameId;
+  const threadType = typeof postData?.threadType === 'string' ? postData.threadType : 'game';
+  const cacheKey = threadDataCacheKey(gameId, threadType);
+
+  try {
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      console.log(`[thread-cache] hit ${cacheKey}`);
+      return c.json<Record<string, unknown>>(JSON.parse(cached));
+    }
+    console.log(`[thread-cache] miss ${cacheKey}`);
+  } catch (error) {
+    console.warn(`Thread cache read failed for game ${gameId}:`, error);
+  }
+
+  try {
+    const [boxScore, playByPlay, game] = await Promise.all([
+      timed('boxscore', isTestFixture ? cavsBotApi.boxScore(gameId).catch(() => testBoxScore) : cavsBotApi.boxScore(gameId)),
+      timed('playbyplay', isTestFixture ? cavsBotApi.playByPlay(gameId).catch(() => testPlayByPlay) : cavsBotApi.playByPlay(gameId)),
+      timed('game', isTestFixture ? cavsBotApi.game(gameId).catch(() => testGame) : cavsBotApi.game(gameId)),
+    ]);
+    const visitorGameTeam = game.visitingTeam;
+    const homeGameTeam = game.homeTeam;
+    const gameSeason = seasonFromStartTime(game.startTime);
+    const teams = [visitorGameTeam, homeGameTeam];
+    const matchupSeasonType = game.seasonType === 2 || game.seasonType === 3 ? 3 : undefined;
+    const pastMatchups = (team: number, opponent: number) => cavsBotApi.request<typeof testGame[]>(`/api/v1/teams/${encodeURIComponent(String(team))}/matchups/${encodeURIComponent(String(opponent))}/past`, { count: 10, seasonType: matchupSeasonType });
+    const enrichment = await Promise.allSettled([
+      ...teams.map((team) => timed(`record-${team.abbreviation}`, isTestFixture
+        ? cavsBotApi.record(String(team.id)).catch(() => ({ team: team.abbreviation, record: null, wins: '0', losses: '0' }))
+        : cavsBotApi.record(String(team.id)))),
+      timed('standings', isTestFixture ? cavsBotApi.standings().catch(() => []) : cavsBotApi.standings()),
+      timed('recent-form', isTestFixture ? cavsBotApi.recentForm(String(visitorGameTeam.id), 5).catch(() => []) : cavsBotApi.recentForm(String(visitorGameTeam.id), 5)),
+      isTestFixture
+        ? timed('past-matchups', pastMatchups(visitorGameTeam.id, homeGameTeam.id).catch(() => [testGame]))
+        : timed('past-matchups', pastMatchups(visitorGameTeam.id, homeGameTeam.id)),
+      timed(`four-factors-${gameSeason}`, isTestFixture
+        ? cavsBotApi.teamFourFactors(String(visitorGameTeam.id), { season: gameSeason }).catch(() => null)
+        : cavsBotApi.teamFourFactors(String(visitorGameTeam.id), { season: gameSeason })),
+    ]);
+    const enrichmentValue = <T,>(index: number, fallback: T) => {
+      const result = enrichment[index];
+      return result?.status === 'fulfilled' ? result.value as T : fallback;
+    };
+    const matchupHistory = enrichmentValue(4, [] as typeof testGame[]).filter((matchup) => matchup.seasonType !== 2);
+    const response = {
+      gameId,
+      threadType,
+      seasonType: postData?.seasonType ?? 2,
+      boxScore,
+      playByPlay,
+      game,
+      records: { visitor: enrichmentValue(0, null), home: enrichmentValue(1, null) },
+      standings: enrichmentValue(2, []),
+      recentForm: enrichmentValue(3, []),
+      matchups: matchupHistory,
+      fourFactors: enrichmentValue(5, null),
+      fetchedAt: new Date().toISOString(),
+    };
+    try {
+      await redis.set(cacheKey, JSON.stringify(response));
+      await redis.expire(cacheKey, cacheTtlSeconds(threadType));
+    } catch (error) {
+      console.warn(`Thread cache write failed for game ${gameId}:`, error);
+    }
+    return c.json(response);
+  } catch (error) {
+    console.error(`Thread data error for game ${gameId}:`, error);
+    if (isTestFixture) {
+      return c.json<Record<string, unknown>>({
+        gameId,
+        threadType: postData?.threadType ?? 'game',
+        seasonType: testGame.seasonType,
+        boxScore: testBoxScore,
+        playByPlay: testPlayByPlay,
+        game: testGame,
+        records: { visitor: null, home: null },
+        standings: [],
+        recentForm: [],
+        matchups: [testGame],
+        fourFactors: null,
+        fetchedAt: new Date().toISOString(),
+      });
+    }
+    return c.json<ErrorResponse>({ status: 'error', message: 'Unable to load live game data' }, 502);
+  }
+});
+
+api.get('/init', async (c) => {
+  const { postId } = context;
+
+  if (!postId) {
+    console.error('API Init Error: postId not found in devvit context');
+    return c.json<ErrorResponse>(
+      {
+        status: 'error',
+        message: 'postId is required but missing from context',
+      },
+      400
+    );
+  }
+
+  try {
+    const [count, username] = await Promise.all([
+      redis.get('count'),
+      reddit.getCurrentUsername(),
+    ]);
+
+    return c.json<InitResponse>({
+      type: 'init',
+      postId: postId,
+      count: count ? parseInt(count) : 0,
+      username: username ?? 'anonymous',
+    });
+  } catch (error) {
+    console.error(`API Init Error for post ${postId}:`, error);
+    let errorMessage = 'Unknown error during initialization';
+    if (error instanceof Error) {
+      errorMessage = `Initialization failed: ${error.message}`;
+    }
+    return c.json<ErrorResponse>(
+      { status: 'error', message: errorMessage },
+      400
+    );
+  }
+});
+
+api.post('/increment', async (c) => {
+  const { postId } = context;
+  if (!postId) {
+    return c.json<ErrorResponse>(
+      {
+        status: 'error',
+        message: 'postId is required',
+      },
+      400
+    );
+  }
+
+  const count = await redis.incrBy('count', 1);
+  return c.json<IncrementResponse>({
+    count,
+    postId,
+    type: 'increment',
+  });
+});
+
+api.post('/decrement', async (c) => {
+  const { postId } = context;
+  if (!postId) {
+    return c.json<ErrorResponse>(
+      {
+        status: 'error',
+        message: 'postId is required',
+      },
+      400
+    );
+  }
+
+  const count = await redis.incrBy('count', -1);
+  return c.json<DecrementResponse>({
+    count,
+    postId,
+    type: 'decrement',
+  });
+});

@@ -1,0 +1,110 @@
+{
+  "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
+  "name": "cavsbottest",
+  "post": {
+    "dir": "dist/client",
+    "entrypoints": {
+      "default": {
+        "inline": true,
+        "entry": "splash.html"
+      },
+      "game": {
+        "entry": "game.html"
+      }
+    }
+  },
+  "server": {
+    "dir": "dist/server",
+    "entry": "index.cjs"
+  },
+  "permissions": {
+    "http": {
+      "enable": true,
+      "domains": [
+        "cavsbotapi-brfghpcjgdggaugg.eastus-01.azurewebsites.net"
+      ]
+    }
+  },
+  "menu": {
+    "items": [
+      {
+        "label": "Create a new post",
+        "description": "cavsbottest",
+        "location": "subreddit",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/post-create"
+      },
+      {
+        "label": "Example form",
+        "description": "Show a simple form",
+        "location": "subreddit",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/example-form"
+      },
+      {
+        "label": "Refresh CavsBot sidebar",
+        "description": "Update schedule, standings, and widgets now",
+        "location": "subreddit",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/sidebar-refresh"
+      },
+      {
+        "label": "Clear thread Redis cache",
+        "description": "Delete the current post's cached thread data",
+        "location": "post",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/thread-cache-clear"
+      },
+      {
+        "label": "TEST: Create game thread",
+        "description": "Create a fixture-backed game thread for 0042500304",
+        "location": "subreddit",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/test-game-thread"
+      },
+      {
+        "label": "TEST: Create game day thread",
+        "description": "Create a fixture-backed game day thread for 0042500304",
+        "location": "subreddit",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/test-game-day-thread"
+      },
+      {
+        "label": "TEST: Create next day thread",
+        "description": "Create a fixture-backed next day discussion for 0042500304",
+        "location": "subreddit",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/test-next-day-thread"
+      },
+      {
+        "label": "TEST: Create post game thread",
+        "description": "Create a fixture-backed post game thread for 0042500304",
+        "location": "subreddit",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/test-post-game-thread"
+      }
+    ]
+  },
+  "forms": {
+    "exampleForm": "/internal/form/example-submit"
+  },
+  "triggers": {
+    "onAppInstall": "/internal/triggers/on-app-install"
+  },
+  "scheduler": {
+    "tasks": {
+      "update-sidebar": {
+        "endpoint": "/internal/scheduler/update-sidebar",
+        "cron": "*/5 * * * *"
+      },
+      "update-game-threads": {
+        "endpoint": "/internal/scheduler/update-game-threads",
+        "cron": "*/5 * * * *"
+      }
+    }
+  },
+  "scripts": {
+    "dev": "vite build --watch",
+    "build": "vite build"
+  }
+}
