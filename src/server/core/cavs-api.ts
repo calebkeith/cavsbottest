@@ -164,6 +164,17 @@ export type StatsResponse = {
 };
 
 export type GameActionResponse = ApiObject;
+export type WinProbabilityPoint = {
+  gameId: string;
+  period: number;
+  clock: string;
+  homeScore: number;
+  awayScore: number;
+  possessionTeamId: number | null;
+  homeWinProbability: number;
+  awayWinProbability: number;
+};
+export type WinProbabilityResponse = WinProbabilityPoint[];
 export type PlayerSearchResponse = ApiObject;
 export type LeagueLeaderResponse = ApiObject;
 export type TeamDashboardResponse = ApiObject;
@@ -258,6 +269,7 @@ export class CavsBotApiClient {
   standings(query?: Query) { return this.request<StandingResponse[]>('/api/v1/standings', query); }
   record(team: TeamIdentifier, seasonType?: number) { return this.request<RecordResponse>(`/api/v1/teams/${encodeURIComponent(team)}/record`, { seasonType }); }
   boxScore(gameId: string) { return this.request<BoxScoreResponse>(`/api/v1/games/${encodeURIComponent(gameId)}/boxscore`); }
+  winProbability(gameId: string) { return this.request<WinProbabilityResponse>(`/api/v1/games/${encodeURIComponent(gameId)}/win-probability`); }
 }
 
 export const cavsBotApi = new CavsBotApiClient();

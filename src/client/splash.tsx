@@ -1,6 +1,6 @@
 import './index.css';
 
-import { Fragment, StrictMode, useEffect, useRef, useState } from 'react';
+import { Fragment, StrictMode, useEffect, useRef, useState, type PointerEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 
 type PlayerStatisticsResponse = {
@@ -107,6 +107,7 @@ type ThreadResponse = {
   recentForm: ScheduleGameResponse[];
   matchups: ScheduleGameResponse[];
   fourFactors: Record<string, unknown> | null;
+  winProbability?: Array<{ qtr: string; mintm: number; sectm: number; scr: number; poss: 'Y' | 'N'; probability: number; recordedAt: string }>;
   insightsReady?: boolean;
   fetchedAt: string;
 };
@@ -134,6 +135,15 @@ const formatGameClock = (duration: string | null | undefined) => {
   if (!match) return duration;
   const totalSeconds = Math.round(Number(match[1] ?? 0) * 3600 + Number(match[2] ?? 0) * 60 + Number(match[3] ?? 0));
   return `${Math.floor(totalSeconds / 60)}:${String(totalSeconds % 60).padStart(2, '0')}`;
+};
+
+const winProbabilityPath = (samples: NonNullable<ThreadResponse['winProbability']>) => {
+  if (!samples.length) return '';
+  const width = 600;
+  const height = 180;
+  const x = (index: number) => samples.length === 1 ? width / 2 : index * width / (samples.length - 1);
+  const y = (probability: number) => height - Math.max(0, Math.min(100, probability)) * height / 100;
+  return samples.map((sample, index) => `${index ? 'L' : 'M'} ${x(index).toFixed(1)} ${y(sample.probability).toFixed(1)}`).join(' ');
 };
 
 const playByPlayText = (event: PlayByPlayEvent) => {
@@ -378,6 +388,7 @@ export const Splash = () => {
   const mainRef = useRef<HTMLElement>(null);
   const [liveThread, setLiveThread] = useState<ThreadResponse | null>(null);
   const [playByPlayScrollTop, setPlayByPlayScrollTop] = useState(0);
+  const [selectedWinProbabilityIndex, setSelectedWinProbabilityIndex] = useState<number | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -545,6 +556,8 @@ export const Splash = () => {
   const homePeriodScores = homeTeam ? periodScores(homeTeam) : periodLabels.map(() => '-');
   const arena = liveThread?.boxScore.arena;
   const officials = liveThread?.boxScore.officials ?? [];
+  const winProbability = liveThread?.winProbability ?? [];
+  const latestWinProbability = winProbability.at(-1);
   const officialNames = officials.map((official) => {
     const name = typeof official.name === 'string' ? official.name : [official.firstName, official.familyName].filter((part): part is string => typeof part === 'string').join(' ');
     return name || null;
@@ -559,6 +572,7 @@ export const Splash = () => {
         </h2>
        
       </div>
+
       <div data-horizontal-scroll className="overflow-x-auto [touch-action:pan-x]">
         <table className="w-full min-w-[1080px] border-separate border-spacing-0 text-left text-xs">
           <thead className="bg-[#202c3b] text-[0.68rem] uppercase tracking-[0.08em] text-[#c3ccd8]">
@@ -629,6 +643,35 @@ export const Splash = () => {
   const mostRecentMatchup = [...matchupGames].sort((left, right) => new Date(right.startTime).getTime() - new Date(left.startTime).getTime())[0];
   const isGameDayThread = liveThread?.threadType === 'game-day';
   const isPregameThread = isGameDayThread || (liveThread?.threadType === 'game' && !gameInProgress && !liveStatus?.toLowerCase().includes('final'));
+  const probabilityGraph = (liveThread?.threadType === 'game' || liveThread?.threadType === 'post-game') && winProbability.length > 0 ? (() => {
+    const graphWidth = 600;
+    const graphHeight = 180;
+    const graphX = (index: number) => winProbability.length === 1 ? graphWidth / 2 : index * graphWidth / (winProbability.length - 1);
+    const graphY = (probability: number) => graphHeight - Math.max(0, Math.min(100, probability)) * graphHeight / 100;
+    const selectedProbability = selectedWinProbabilityIndex === null ? latestWinProbability : winProbability[selectedWinProbabilityIndex];
+    const graphEndLabel = liveThread.threadType === 'game' && gameInProgress ? 'Current' : 'Match End';
+    const selectProbability = (event: PointerEvent<SVGSVGElement>) => {
+      const bounds = event.currentTarget.getBoundingClientRect();
+      const ratio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
+      setSelectedWinProbabilityIndex(Math.round(ratio * (winProbability.length - 1)));
+      if (event.pointerType === 'touch') event.currentTarget.setPointerCapture(event.pointerId);
+    };
+    return <section className="mt-5 border-t border-[#354052] pt-5" aria-label="Cavaliers win probability">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="text-sm font-bold">Cavaliers win probability</h3>
+        {selectedProbability && <strong className="text-lg text-[#FDBB30]">{selectedProbability.probability.toFixed(1)}%</strong>}
+      </div>
+      <div className="mt-3 overflow-x-auto rounded-lg bg-[#0b121b] p-2">
+        <svg className="h-48 min-w-[520px] w-full" viewBox={`0 0 ${graphWidth} ${graphHeight}`} role="img" aria-label="Cavaliers win probability over the course of the game" preserveAspectRatio="none" onPointerMove={selectProbability} onPointerDown={selectProbability} onPointerLeave={(event) => { if (event.pointerType === 'mouse') setSelectedWinProbabilityIndex(null); }}>
+          {[0, 25, 50, 75, 100].map((value) => <g key={value}><line x1="0" x2={graphWidth} y1={graphY(value)} y2={graphY(value)} stroke="#354052" strokeWidth="1" /><text x="4" y={graphY(value) - 3} fill="#7f8b9a" fontSize="10">{value}%</text></g>)}
+          <path d={winProbabilityPath(winProbability)} fill="none" stroke="#FDBB30" strokeWidth="3" vectorEffect="non-scaling-stroke" />
+          {selectedProbability && <><line x1={graphX(selectedWinProbabilityIndex ?? winProbability.length - 1)} x2={graphX(selectedWinProbabilityIndex ?? winProbability.length - 1)} y1="0" y2={graphHeight} stroke="#f5f1e8" strokeDasharray="4 4" strokeWidth="1" /><circle cx={graphX(selectedWinProbabilityIndex ?? winProbability.length - 1)} cy={graphY(selectedProbability.probability)} r="5" fill="#FDBB30" stroke="#f5f1e8" strokeWidth="2" /></>}
+          <rect x="0" y="0" width={graphWidth} height={graphHeight} fill="transparent" style={{ cursor: 'crosshair' }} />
+        </svg>
+      </div>
+      <div className="mt-2 flex justify-between text-[11px] text-[#7f8b9a]"><span>Match Start</span><span>{selectedProbability ? `${selectedProbability.qtr} ${selectedProbability.mintm}:${String(selectedProbability.sectm).padStart(2, '0')} · ${selectedProbability.probability.toFixed(1)}%` : `${winProbability.length} samples`}</span><span>{graphEndLabel}</span></div>
+    </section>;
+  })() : null;
   const boxScoreContent = !liveThread ? (
     <div className="mt-6 space-y-4" aria-label="Loading box score">
       {[0, 1].map((team) => <div className="overflow-hidden rounded-xl border border-[#354052] bg-[#111923]" key={`box-score-skeleton-${team}`}>
@@ -727,6 +770,7 @@ export const Splash = () => {
                 <div className="sm:col-span-2"><h3 className="text-xs font-bold uppercase tracking-[0.08em] text-[#aeb8c6]">Clutch moments</h3><ul className="mt-2 space-y-1 text-xs text-[#c3ccd8]">{clutchMoments.length ? clutchMoments.map((moment, index) => <li className="truncate" key={`clutch-${index}`} title={`${moment.text} · ${moment.reason}`}>{moment.text} <span className="text-[#FDBB30]">· {moment.reason}</span></li>) : <li className="text-[#7f8b9a]">No clutch moments available.</li>}</ul></div>
               </div>
             </>}
+            {probabilityGraph}
           </section>}
 
           {!isGameDayThread && <>

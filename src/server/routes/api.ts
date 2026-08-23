@@ -23,6 +23,7 @@ export const threadCacheGenerationKey = (gameId: string, threadType: string) => 
 const cacheTtlSeconds = (threadType: string) => threadType === 'game' ? 60 : 24 * 60 * 60;
 const coreCacheTtlSeconds = (threadType: string) => threadType === 'game' ? 45 : 24 * 60 * 60;
 const insightCacheTtlSeconds = (threadType: string) => threadType === 'game' ? 5 * 60 : 24 * 60 * 60;
+const winProbabilityTimelineKey = (gameId: string) => `cavsbot:win-probability:${gameId}`;
 const seasonFromStartTime = (startTime: string) => {
   const date = new Date(startTime);
   const startYear = date.getUTCMonth() >= 9 ? date.getUTCFullYear() : date.getUTCFullYear() - 1;
@@ -35,6 +36,62 @@ const timed = async <T,>(label: string, task: Promise<T>) => {
   } finally {
     console.log(`[thread-timing] ${label} ${Date.now() - startedAt}ms`);
   }
+};
+
+const durationSeconds = (duration: string | null) => {
+  const match = duration?.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?/);
+  return match ? Number(match[1] ?? 0) * 3600 + Number(match[2] ?? 0) * 60 + Number(match[3] ?? 0) : 0;
+};
+
+type WinProbabilitySample = {
+  qtr: string;
+  mintm: number;
+  sectm: number;
+  scr: number;
+  poss: 'Y' | 'N';
+  probability: number;
+  recordedAt: string;
+};
+
+const saveWinProbabilityTimeline = async (gameId: string, timeline: WinProbabilitySample[]) => {
+  if (!timeline.length) return;
+  try {
+    const timelineKey = winProbabilityTimelineKey(gameId);
+    await redis.set(timelineKey, JSON.stringify(timeline.slice(-300)));
+    await redis.expire(timelineKey, 7 * 24 * 60 * 60);
+  } catch (error) {
+    console.warn(`Win probability update failed for game ${gameId}:`, error);
+  }
+};
+
+const recordWinProbability = async (gameId: string, boxScore: Awaited<ReturnType<typeof cavsBotApi.boxScore>>) => {
+  try {
+    const points = await cavsBotApi.winProbability(gameId);
+    const clevelandIsHome = boxScore.home.team.abbreviation === 'CLE';
+    const clevelandId = clevelandIsHome ? boxScore.home.team.id : boxScore.visitor.team.id;
+    const timeline = points.map((point) => {
+      const clock = Math.max(0, durationSeconds(point.clock));
+      const probability = clevelandIsHome ? Number(point.homeWinProbability) : Number(point.awayWinProbability);
+      return {
+        qtr: point.period > 4 ? 'OT' : `Q${point.period}`,
+        mintm: Math.floor(clock / 60),
+        sectm: Math.floor(clock % 60),
+        scr: clevelandIsHome ? point.homeScore - point.awayScore : point.awayScore - point.homeScore,
+        poss: point.possessionTeamId === clevelandId ? 'Y' as const : 'N' as const,
+        probability,
+        recordedAt: new Date().toISOString(),
+      } satisfies WinProbabilitySample;
+    }).filter((sample) => Number.isFinite(sample.probability));
+    console.log(`[win-probability] game=${gameId} points=${points.length} timeline=${timeline.length}`);
+    await saveWinProbabilityTimeline(gameId, timeline);
+  } catch (error) {
+    console.warn(`Win probability update failed for game ${gameId}:`, error);
+  }
+};
+
+const readWinProbabilityTimeline = async (gameId: string) => {
+  const value = await redis.get(winProbabilityTimelineKey(gameId));
+  return value ? JSON.parse(value) as Array<Record<string, unknown>> : [];
 };
 
 export const api = new Hono();
@@ -58,12 +115,22 @@ api.get('/thread/core', async (c) => {
     const cachedFull = await redis.get(fullCacheKey);
     if (cachedFull) {
       console.log(`[thread-cache] hit ${fullCacheKey}`);
-      return c.json({ ...JSON.parse(cachedFull), insightsReady: true });
+      const cachedResponse = JSON.parse(cachedFull) as Record<string, unknown>;
+      if ((threadType === 'game' || threadType === 'post-game') && cachedResponse.boxScore) {
+        const boxScore = cachedResponse.boxScore as Awaited<ReturnType<typeof cavsBotApi.boxScore>>;
+        await recordWinProbability(gameId, boxScore);
+      }
+      return c.json({ ...cachedResponse, winProbability: await readWinProbabilityTimeline(gameId), insightsReady: true });
     }
     const cached = await redis.get(cacheKey);
     if (cached) {
       console.log(`[thread-cache] hit ${cacheKey}`);
-      return c.json({ ...JSON.parse(cached), insightsReady: false });
+      const cachedResponse = JSON.parse(cached) as Record<string, unknown>;
+      if ((threadType === 'game' || threadType === 'post-game') && cachedResponse.boxScore) {
+        const boxScore = cachedResponse.boxScore as Awaited<ReturnType<typeof cavsBotApi.boxScore>>;
+        await recordWinProbability(gameId, boxScore);
+      }
+      return c.json({ ...cachedResponse, winProbability: await readWinProbabilityTimeline(gameId), insightsReady: false });
     }
     console.log(`[thread-cache] miss ${cacheKey}`);
     const [boxScore, playByPlay, game] = await Promise.all([
@@ -71,7 +138,9 @@ api.get('/thread/core', async (c) => {
       timed('playbyplay', isTestFixture ? cavsBotApi.playByPlay(gameId).catch(() => testPlayByPlay) : cavsBotApi.playByPlay(gameId)),
       timed('game', isTestFixture ? cavsBotApi.game(gameId).catch(() => testGame) : cavsBotApi.game(gameId)),
     ]);
-    const response = { gameId, threadType, seasonType: postData?.seasonType ?? 2, boxScore, playByPlay, game, records: { visitor: null, home: null }, standings: [], recentForm: [], matchups: [], fourFactors: null, insightsReady: false, fetchedAt: new Date().toISOString() };
+    if (threadType === 'game' || threadType === 'post-game') await recordWinProbability(gameId, boxScore);
+    const winProbability = await readWinProbabilityTimeline(gameId);
+    const response = { gameId, threadType, seasonType: postData?.seasonType ?? 2, boxScore, playByPlay, game, records: { visitor: null, home: null }, standings: [], recentForm: [], matchups: [], fourFactors: null, winProbability, insightsReady: false, fetchedAt: new Date().toISOString() };
     try {
       if (await redis.get(threadCacheGenerationKey(gameId, threadType)) !== generation) {
         console.log(`[thread-cache] discarded stale core response ${cacheKey}`);
