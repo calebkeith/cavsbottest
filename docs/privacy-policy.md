@@ -1,3 +1,8 @@
+---
+layout: default
+permalink: /privacy-policy.html
+---
+
 # CavsBot Privacy Policy
 
 **Effective date:** [2026-09-27]
@@ -62,6 +67,6 @@ We may update this Privacy Policy when the app or its data practices change. The
 
 ## Contact
 
-**CavsBot operator:** Caleb Keith
-**Email:** caleb.keith@outlook.com
-**Policy URL:** https://calebkeith.github.io/cavsbottest/privacy-policy.html
+**CavsBot operator:** Caleb Keith  \
+**Email:** caleb.keith@outlook.com  \
+**Policy URL:** https://calebkeith.github.io/cavsbottest/docs/privacy-policy.html
