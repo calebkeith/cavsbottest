@@ -59,4 +59,4 @@ These Terms are governed by the laws of **Ohio, USA**, without regard to conflic
 
 **CavsBot operator:** Caleb Keith  \
 **Email:** caleb.keith@outlook.com  \
-**Terms URL:** https://calebkeith.github.io/cavsbottest/docs/terms-and-conditions.html
+**Terms URL:** https://calebkeith.github.io/cavsbottest/terms-and-conditions.html

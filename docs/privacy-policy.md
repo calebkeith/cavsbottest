@@ -69,4 +69,4 @@ We may update this Privacy Policy when the app or its data practices change. The
 
 **CavsBot operator:** Caleb Keith  \
 **Email:** caleb.keith@outlook.com  \
-**Policy URL:** https://calebkeith.github.io/cavsbottest/docs/privacy-policy.html
+**Policy URL:** https://calebkeith.github.io/cavsbottest/privacy-policy.html
