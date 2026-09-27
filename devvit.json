@@ -1,6 +1,9 @@
 {
   "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
-  "name": "cavsbottest",
+  "name": "cavsbot",
+  "marketingAssets": {
+    "icon": "public/cavs-app-icon.png"
+  },
   "post": {
     "dir": "dist/client",
     "entrypoints": {
@@ -29,7 +32,7 @@
     "items": [
       {
         "label": "Create a new post",
-        "description": "cavsbottest",
+        "description": "CavsBot",
         "location": "subreddit",
         "forUserType": "moderator",
         "endpoint": "/internal/menu/post-create"
