@@ -1,7 +1,10 @@
 import './index.css';
 
-import { Fragment, StrictMode, useEffect, useRef, useState, type PointerEvent } from 'react';
+import { Fragment, StrictMode, useEffect, useState, type PointerEvent } from 'react';
 import { createRoot } from 'react-dom/client';
+import { exitExpandedMode } from '@devvit/web/client';
+
+const expandedStartedAt = performance.now();
 
 type PlayerStatisticsResponse = {
   minutes: string;
@@ -385,8 +388,8 @@ const rowsFromTeam = (team: BoxScoreResponse['visitor']): string[][] => [
 ];
 
 export const Splash = () => {
-  const mainRef = useRef<HTMLElement>(null);
   const [liveThread, setLiveThread] = useState<ThreadResponse | null>(null);
+  const [playByPlayLoading, setPlayByPlayLoading] = useState(false);
   const [playByPlayScrollTop, setPlayByPlayScrollTop] = useState(0);
   const [selectedWinProbabilityIndex, setSelectedWinProbabilityIndex] = useState<number | null>(null);
 
@@ -397,20 +400,44 @@ export const Splash = () => {
     const loadLiveThread = async () => {
       if (!active || document.hidden || requestInFlight) return;
       requestInFlight = true;
+      const coreStartedAt = performance.now();
+      console.info(`[expanded-timing] core:start offset=${Math.round(coreStartedAt - expandedStartedAt)}ms`);
       try {
-        const response = await fetch('/api/thread/core', { cache: 'no-store' });
+        const response = await fetch('/api/thread/core?summary=1', { cache: 'no-store' });
         if (!response.ok) return;
         const data = (await response.json()) as ThreadResponse;
+        console.info(`[expanded-timing] core:response duration=${Math.round(performance.now() - coreStartedAt)}ms bytes=${response.headers.get('content-length') ?? 'unknown'} insightsReady=${Boolean(data.insightsReady)}`);
         if (!active) return;
         setLiveThread(data);
+        if (data.threadType !== 'game-day' && !data.playByPlay.length) {
+          setPlayByPlayLoading(true);
+          const playByPlayStartedAt = performance.now();
+          console.info('[expanded-timing] play-by-play:start');
+          void fetch('/api/thread/play-by-play', { cache: 'no-store' })
+            .then(async (playByPlayResponse) => {
+              if (!playByPlayResponse.ok) throw new Error(`HTTP ${playByPlayResponse.status}`);
+              const payload = await playByPlayResponse.json() as { playByPlay: PlayByPlayEvent[] };
+              console.info(`[expanded-timing] play-by-play:response duration=${Math.round(performance.now() - playByPlayStartedAt)}ms bytes=${playByPlayResponse.headers.get('content-length') ?? 'unknown'}`);
+              if (active) setLiveThread((current) => current ? { ...current, playByPlay: payload.playByPlay } : current);
+            })
+            .catch(() => console.warn(`[expanded-timing] play-by-play:error duration=${Math.round(performance.now() - playByPlayStartedAt)}ms`))
+            .finally(() => {
+              if (active) setPlayByPlayLoading(false);
+            });
+        } else {
+          setPlayByPlayLoading(false);
+        }
         if (data.insightsReady) return;
         const clevelandTeamId = data.game.visitingTeam.abbreviation === 'CLE' ? data.game.visitingTeam.id : data.game.homeTeam.id;
         const query = `visitorTeamId=${data.game.visitingTeam.id}&homeTeamId=${data.game.homeTeam.id}&clevelandTeamId=${clevelandTeamId}&season=${encodeURIComponent(seasonFromStartTime(data.game.startTime))}`;
-        const sections = ['records', 'standings', 'recent-form', 'past-matchups', 'four-factors'] as const;
+        const sections = ['records', 'recent-form', 'past-matchups', 'four-factors'] as const;
         await Promise.all(sections.map(async (section) => {
+          const sectionStartedAt = performance.now();
+          console.info(`[expanded-timing] section:start section=${section}`);
           const response = await fetch(`/api/thread/insight?section=${section}&${query}`, { cache: 'no-store' });
           if (!response.ok || !active) return;
           const insight = await response.json() as Partial<ThreadResponse>;
+          console.info(`[expanded-timing] section:response section=${section} duration=${Math.round(performance.now() - sectionStartedAt)}ms bytes=${response.headers.get('content-length') ?? 'unknown'}`);
           setLiveThread((current) => current ? { ...current, ...insight } : current);
         }));
       } finally {
@@ -433,113 +460,12 @@ export const Splash = () => {
   }, []);
 
   useEffect(() => {
-    const main = mainRef.current;
-    if (!main) return;
-
-    let lastTouchY = 0;
-    let startTouchX = 0;
-    let startTouchY = 0;
-    let isVerticalGesture = false;
-    let isTableGesture = false;
-    let scrollElement: HTMLElement = main;
-    let isHorizontalGesture = false;
-    let velocity = 0;
-    let scrollPosition = 0;
-    let pendingDelta = 0;
-    let frameId: number | null = null;
-    let momentumId: number | null = null;
-
-    const clampScroll = () => {
-      const maxScroll = Math.max(0, scrollElement.scrollHeight - scrollElement.clientHeight);
-      scrollPosition = Math.max(0, Math.min(scrollPosition, maxScroll));
-      scrollElement.scrollTop = scrollPosition;
-    };
-
-    const applyScroll = () => {
-      scrollPosition += pendingDelta;
-      clampScroll();
-      pendingDelta = 0;
-      frameId = null;
-    };
-
-    const handleTouchStart = (event: TouchEvent) => {
-      if (momentumId !== null) cancelAnimationFrame(momentumId);
-      momentumId = null;
-      velocity = 0;
-      scrollPosition = main.scrollTop;
-      startTouchX = event.touches[0]?.clientX ?? 0;
-      startTouchY = event.touches[0]?.clientY ?? 0;
-      isVerticalGesture = false;
-      isTableGesture = event.target instanceof Element && event.target.closest('[data-horizontal-scroll]') !== null;
-      const nestedScrollElement = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-play-by-play-scroll]') : null;
-      scrollElement = nestedScrollElement ?? main;
-      isHorizontalGesture = false;
-      lastTouchY = startTouchY;
-      scrollPosition = scrollElement.scrollTop;
-      if (!isTableGesture) {
-        event.preventDefault();
-        event.stopPropagation();
-      }
-    };
-
-    const handleTouchMove = (event: TouchEvent) => {
-      const currentTouchY = event.touches[0]?.clientY ?? lastTouchY;
-      const currentTouchX = event.touches[0]?.clientX ?? startTouchX;
-      if (isHorizontalGesture) return;
-      if (!isVerticalGesture && !isTableGesture) {
-        const horizontalDistance = Math.abs(currentTouchX - startTouchX);
-        const verticalDistance = Math.abs(currentTouchY - startTouchY);
-        if (horizontalDistance > verticalDistance && horizontalDistance > 6) return;
-        if (verticalDistance > 6) isVerticalGesture = true;
-      }
-      if (isTableGesture && !isVerticalGesture) {
-        const horizontalDistance = Math.abs(currentTouchX - startTouchX);
-        const verticalDistance = Math.abs(currentTouchY - startTouchY);
-        if (horizontalDistance > verticalDistance && horizontalDistance > 6) {
-          isHorizontalGesture = true;
-          return;
-        }
-        if (verticalDistance > 6) isVerticalGesture = true;
-      }
-      if (!isVerticalGesture) return;
-      event.stopPropagation();
-      const delta = lastTouchY - currentTouchY;
-      lastTouchY = currentTouchY;
-      velocity = velocity * 0.7 + delta * 0.3;
-      pendingDelta += delta;
-      if (frameId === null) frameId = requestAnimationFrame(applyScroll);
-      event.preventDefault();
-    };
-
-    const handleTouchEnd = () => {
-      if (frameId !== null) cancelAnimationFrame(frameId);
-      applyScroll();
-      const continueMomentum = () => {
-        velocity *= 0.94;
-        if (Math.abs(velocity) < 0.15) {
-          momentumId = null;
-          return;
-        }
-        scrollPosition += velocity;
-        clampScroll();
-        momentumId = requestAnimationFrame(continueMomentum);
-      };
-      momentumId = requestAnimationFrame(continueMomentum);
-    };
-
-    main.addEventListener('touchstart', handleTouchStart, { capture: true, passive: false });
-    main.addEventListener('touchmove', handleTouchMove, { capture: true, passive: false });
-    main.addEventListener('touchend', handleTouchEnd, { capture: true, passive: true });
-    main.addEventListener('touchcancel', handleTouchEnd, { capture: true, passive: true });
-    return () => {
-      main.removeEventListener('touchstart', handleTouchStart, true);
-      main.removeEventListener('touchmove', handleTouchMove, true);
-      main.removeEventListener('touchend', handleTouchEnd, true);
-      main.removeEventListener('touchcancel', handleTouchEnd, true);
-      if (frameId !== null) cancelAnimationFrame(frameId);
-      if (momentumId !== null) cancelAnimationFrame(momentumId);
-    };
-  }, []);
+    if (!liveThread) return;
+    const frameId = requestAnimationFrame(() => {
+      console.info(`[expanded-timing] rendered-after-data duration=${Math.round(performance.now() - expandedStartedAt)}ms`);
+    });
+    return () => cancelAnimationFrame(frameId);
+  }, [liveThread]);
 
   const homeTeam = liveThread?.boxScore.home;
   const visitorTeam = liveThread?.boxScore.visitor;
@@ -696,12 +622,15 @@ export const Splash = () => {
   );
 
   return (
-    <main ref={mainRef} className="h-full overflow-y-auto overscroll-contain bg-[#080d14] px-3 py-5 text-[#f5f1e8] [touch-action:none] sm:px-8 sm:py-8">
+    <main className="min-h-full bg-[#080d14] px-3 py-5 text-[#f5f1e8] sm:px-8 sm:py-8">
       <article className="mx-auto max-w-4xl overflow-visible rounded-2xl border border-[#354052] bg-[#111923] shadow-[0_12px_40px_rgba(0,0,0,0.35)]">
         <header className="rounded-t-2xl border-b-4 border-[#FDBB30] bg-[#860038] px-5 py-6 text-white sm:px-8">
           <div className="mb-5 flex flex-wrap items-center justify-between gap-3 text-xs font-semibold uppercase tracking-[0.16em] text-[#FDBB30]">
             <span>r/clevelandcavs game thread</span>
             <div className="flex items-center gap-3">
+              <button className="rounded border border-[#FDBB30] px-2 py-1 text-[10px] font-bold tracking-normal text-[#FDBB30] transition-colors hover:bg-[#FDBB30] hover:text-[#860038]" onClick={(event) => exitExpandedMode(event.nativeEvent)}>
+                Exit expanded view
+              </button>
               {liveThread?.threadType === 'game' && gameInProgress && <span className="flex items-center gap-1.5 text-[#ffb4a8]" title="Live thread refreshes automatically every minute"><span className="h-2 w-2 animate-pulse rounded-full bg-[#ff5a52]" aria-hidden="true" />Live · Refreshes every minute</span>}
               {liveThread ? <span>{liveStatus ?? (liveThread.threadType === 'game' ? 'Scheduled' : 'Final')}</span> : <Skeleton className="h-3 w-16 bg-[#FDBB30]/40" />}
             </div>
@@ -744,13 +673,18 @@ export const Splash = () => {
             <div className="mt-4 flex gap-6"><Skeleton className="h-4 w-32" /><Skeleton className="h-4 w-28" /></div>
           </>}
 
+          {!isGameDayThread && <>
+            <h2 className="mt-8 text-xl font-bold">Box score</h2>
+            {boxScoreContent}
+          </>}
+
           {liveThread && <section className="mt-6 rounded-xl border border-[#354052] bg-[#111923] p-4" aria-label="Game insights">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <h2 className="text-base font-bold">{isPregameThread ? 'Game preview' : liveThread.threadType === 'post-game' || liveThread.threadType === 'next-day' ? 'Game recap' : 'Live insights'}</h2>
               <span className="text-xs text-[#7f8b9a]">Updated {new Date(liveThread.fetchedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>
             </div>
             {liveThread.recentForm.length > 0 && <div className="mt-3 rounded-lg border border-[#2b3542] bg-[#1a2431] p-3"><h3 className="text-xs font-bold uppercase tracking-[0.08em] text-[#aeb8c6]">Recent Cavs schedule</h3><ul className="mt-2 space-y-1 text-xs">{liveThread.recentForm.slice(0, 5).map((game) => <li className="flex justify-between gap-2"><span>{new Date(game.startTime).toLocaleDateString([], { month: 'short', day: 'numeric' })}</span><span className="truncate text-[#aeb8c6]">{scheduledOpponent(game, 'CLE')}</span></li>)}</ul></div>}
-            {(liveThread.matchups.length > 0 || factorComparisonEntries(liveThread.fourFactors).length > 0) && <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            {(liveThread.matchups.length > 0 || factorComparisonEntries(liveThread.fourFactors).length > 0) && <div className="game-context-legacy mt-3 grid gap-3 sm:grid-cols-2">
               <div className="rounded-lg border border-[#2b3542] bg-[#1a2431] p-3"><h3 className="text-xs font-bold uppercase tracking-[0.08em] text-[#aeb8c6]">Last 10 head-to-head</h3><div className="mt-3 grid grid-cols-2 gap-2 text-xs xl:grid-cols-4">{completedMatchups.length ? <div className="rounded-md bg-[#202d3d] px-3 py-2"><span className="block text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#7f8b9a]">Cavaliers record</span><strong className="mt-1 block text-sm text-[#f5f1e8]">{cavsMatchupWins}-{cavsMatchupLosses}</strong></div> : <div className="rounded-md bg-[#202d3d] px-3 py-2"><span className="block text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#7f8b9a]">Record</span><strong className="mt-1 block text-sm text-[#f5f1e8]">Unavailable</strong></div>}<div className="rounded-md bg-[#202d3d] px-3 py-2"><span className="block text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#7f8b9a]">Meetings</span><strong className="mt-1 block text-sm text-[#f5f1e8]">{matchupGames.length}</strong></div><div className="rounded-md bg-[#202d3d] px-3 py-2"><span className="block text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#7f8b9a]">Home / road</span><strong className="mt-1 block text-sm text-[#f5f1e8]">{cavsHomeMatchups} / {cavsRoadMatchups}</strong></div><div className="rounded-md bg-[#202d3d] px-3 py-2"><span className="block text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#7f8b9a]">Most recent</span><strong className="mt-1 block text-sm text-[#f5f1e8]">{mostRecentMatchup ? new Date(mostRecentMatchup.startTime).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) : 'Unavailable'}</strong></div></div>{matchupGames.length > 0 ? <ul className="mt-3 space-y-1 text-xs">{matchupGames.slice(0, 10).map((game) => { const winner = matchupWinner(game); const visitorWon = winner === game.visitingTeam.abbreviation; const homeWon = winner === game.homeTeam.abbreviation; return <li className="flex justify-between gap-2" key={game.gameId}><span>{new Date(game.startTime).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}</span><span className="truncate text-[#aeb8c6]"><strong className={visitorWon ? 'font-bold text-[#f5f1e8]' : 'font-normal'}>{game.visitingTeam.abbreviation} {game.visitingScore ?? '-'}</strong> - <strong className={homeWon ? 'font-bold text-[#f5f1e8]' : 'font-normal'}>{game.homeScore ?? '-'} {game.homeTeam.abbreviation}</strong>{game.gameLabel ? ` · ${game.gameLabel}` : ''}</span></li>; })}</ul> : <p className="mt-2 text-xs text-[#7f8b9a]">No matchup history available.</p>}</div>
               {factorComparisonEntries(liveThread.fourFactors).length > 0 && <div className="rounded-lg border border-[#2b3542] bg-[#1a2431] p-3"><h3 className="text-xs font-bold uppercase tracking-[0.08em] text-[#aeb8c6]">Four factors</h3><div className="mt-2 grid grid-cols-[minmax(0,1fr)_auto_auto] gap-x-3 text-xs"><span className="border-b border-[#354052] pb-1 font-semibold text-[#aeb8c6]">Stat</span><span className="border-b border-[#354052] pb-1 text-right font-semibold text-[#c3ccd8]">CLE</span><span className="border-b border-[#354052] pb-1 text-right font-semibold text-[#c3ccd8]">OPP</span>{factorComparisonEntries(liveThread.fourFactors).slice(0, 8).map(([label, cavaliersValue, opponentValue]) => <Fragment key={label}><span className="border-b border-[#2b3542] py-1">{label}</span><strong className={`border-b border-[#2b3542] py-1 text-right ${factorValueClass(cavaliersValue, opponentValue)}`}>{String(cavaliersValue)}</strong><strong className={`border-b border-[#2b3542] py-1 text-right ${factorValueClass(opponentValue, cavaliersValue)}`}>{String(opponentValue)}</strong></Fragment>)}</div></div>}
             </div>}
@@ -773,15 +707,38 @@ export const Splash = () => {
             {probabilityGraph}
           </section>}
 
-          {!isGameDayThread && <>
-            <h2 className="mt-8 text-xl font-bold">Box score</h2>
-            {boxScoreContent}
-          </>}
+          {liveThread && (matchupGames.length > 0 || factorComparisonEntries(liveThread.fourFactors).length > 0) && <section className="mt-6 rounded-xl border border-[#354052] bg-[#111923] p-4" aria-label="Game context">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h2 className="text-base font-bold">Game context</h2>
+              <span className="text-xs text-[#7f8b9a]">Head-to-head and four factors</span>
+            </div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              {matchupGames.length > 0 && <div className="rounded-lg border border-[#2b3542] bg-[#1a2431] p-3">
+                <h3 className="text-xs font-bold uppercase tracking-[0.08em] text-[#aeb8c6]">Last 10 head-to-head</h3>
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs xl:grid-cols-4">
+                  <div className="rounded-md bg-[#202d3d] px-3 py-2"><span className="block text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#7f8b9a]">Cavaliers record</span><strong className="mt-1 block text-sm text-[#f5f1e8]">{completedMatchups.length ? `${cavsMatchupWins}-${cavsMatchupLosses}` : 'Unavailable'}</strong></div>
+                  <div className="rounded-md bg-[#202d3d] px-3 py-2"><span className="block text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#7f8b9a]">Meetings</span><strong className="mt-1 block text-sm text-[#f5f1e8]">{matchupGames.length}</strong></div>
+                  <div className="rounded-md bg-[#202d3d] px-3 py-2"><span className="block text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#7f8b9a]">Home / road</span><strong className="mt-1 block text-sm text-[#f5f1e8]">{cavsHomeMatchups} / {cavsRoadMatchups}</strong></div>
+                  <div className="rounded-md bg-[#202d3d] px-3 py-2"><span className="block text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#7f8b9a]">Most recent</span><strong className="mt-1 block text-sm text-[#f5f1e8]">{mostRecentMatchup ? new Date(mostRecentMatchup.startTime).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) : 'Unavailable'}</strong></div>
+                </div>
+                <ul className="mt-3 space-y-1 text-xs text-[#c3ccd8]">
+                  {matchupGames.slice(0, 10).map((game) => {
+                    const winner = matchupWinner(game);
+                    return <li className="flex justify-between gap-3" key={game.gameId ?? game.startTime}><span>{new Date(game.startTime).toLocaleDateString([], { month: 'short', day: 'numeric' })}</span><span className="text-right">{game.visitingTeam.abbreviation} {game.visitingScore ?? '-'} - {game.homeScore ?? '-'} {game.homeTeam.abbreviation} <strong className={winner === 'CLE' ? 'text-[#8fd694]' : 'text-[#ff9d93]'}>{winner === 'CLE' ? 'W' : winner ? 'L' : '-'}</strong></span></li>;
+                  })}
+                </ul>
+              </div>}
+              {factorComparisonEntries(liveThread.fourFactors).length > 0 && <div className="rounded-lg border border-[#2b3542] bg-[#1a2431] p-3">
+                <h3 className="text-xs font-bold uppercase tracking-[0.08em] text-[#aeb8c6]">Four factors</h3>
+                <div className="mt-2 grid grid-cols-[minmax(0,1fr)_auto_auto] gap-x-3 text-xs"><span className="border-b border-[#354052] pb-1 font-semibold text-[#aeb8c6]">Stat</span><span className="border-b border-[#354052] pb-1 text-right font-semibold text-[#c3ccd8]">CLE</span><span className="border-b border-[#354052] pb-1 text-right font-semibold text-[#c3ccd8]">OPP</span>{factorComparisonEntries(liveThread.fourFactors).slice(0, 8).map(([label, cavaliersValue, opponentValue]) => <Fragment key={label}><span className="border-b border-[#2b3542] py-1">{label}</span><strong className={`border-b border-[#2b3542] py-1 text-right ${factorValueClass(cavaliersValue, opponentValue)}`}>{String(cavaliersValue)}</strong><strong className={`border-b border-[#2b3542] py-1 text-right ${factorValueClass(opponentValue, cavaliersValue)}`}>{String(opponentValue)}</strong></Fragment>)}</div>
+              </div>}
+            </div>
+          </section>}
 
           {!isGameDayThread && <section className="mt-6 rounded-xl border border-[#354052] bg-[#111923] p-4" aria-label="Play-by-play">
             <h2 className="text-base font-bold">Play-by-play</h2>
             <div className="mt-3 max-h-56 overflow-x-hidden overflow-y-auto rounded-lg border border-[#2b3542] bg-[#0b121b]" data-horizontal-scroll data-play-by-play-scroll onScroll={(event) => setPlayByPlayScrollTop(event.currentTarget.scrollTop)}>
-              {!liveThread ? <div className="space-y-4 p-4">{[0, 1, 2, 3].map((row) => <div className="flex gap-3" key={`play-skeleton-${row}`}><Skeleton className="h-5 w-5 rounded-full" /><Skeleton className="h-4 w-16" /><Skeleton className="h-4 flex-1" /></div>)}</div> : playByPlayEvents.length ? <table className="w-full table-fixed border-collapse text-left text-xs text-[#c3ccd8]">
+              {!liveThread || playByPlayLoading ? <div className="space-y-4 p-4">{[0, 1, 2, 3].map((row) => <div className="flex gap-3" key={`play-skeleton-${row}`}><Skeleton className="h-5 w-5 rounded-full" /><Skeleton className="h-4 w-16" /><Skeleton className="h-4 flex-1" /></div>)}</div> : playByPlayEvents.length ? <table className="w-full table-fixed border-collapse text-left text-xs text-[#c3ccd8]">
                 <colgroup><col className="w-10" /><col className="w-[4.25rem]" /><col className="w-10" /><col className="w-10" /><col /></colgroup>
                 <thead className="sticky top-0 z-10 bg-[#151f2b] text-[10px] font-bold uppercase tracking-[0.08em] text-[#aeb8c6]">
                   <tr><th className="px-2 py-2">Team</th><th className="px-2 py-2">Period</th><th className="px-1 py-2 text-center">Home</th><th className="px-1 py-2 text-center">Away</th><th className="px-2 py-2">Description</th></tr>

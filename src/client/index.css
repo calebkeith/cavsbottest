@@ -4,9 +4,79 @@ html,
 body {
 	height: 100%;
 	margin: 0;
-	overflow: hidden;
+	background: #080d14;
 }
 
 #root {
 	height: 100%;
+	min-height: 100%;
+	background: #080d14;
+}
+
+.inline-post-header {
+	box-sizing: border-box;
+	display: flex;
+	min-height: 100%;
+	flex-direction: column;
+}
+
+.inline-post-header > footer {
+	margin-top: auto;
+}
+
+.game-day-mobile {
+	display: none;
+}
+
+.game-context-legacy {
+	display: none;
+}
+
+@media (max-width: 639px) {
+	.inline-post-header {
+		min-height: auto;
+	}
+
+	.inline-post-header > footer {
+		margin-top: 0;
+	}
+
+	.inline-post-header--fill {
+		min-height: 100%;
+	}
+
+	.inline-post-header--fill > footer {
+		margin-top: auto;
+	}
+
+	.inline-post-header--compact-mobile {
+		min-height: 100%;
+	}
+
+	.inline-post-header--compact-mobile > footer {
+		margin-top: auto;
+	}
+
+	.game-day-desktop {
+		display: none;
+	}
+
+	.game-day-mobile {
+		display: block;
+	}
+}
+
+.inline-action {
+	flex-shrink: 0;
+	border-radius: 0.5rem;
+	background: #fdbb30;
+	padding: 0.5rem 0.75rem;
+	font-size: 0.75rem;
+	font-weight: 700;
+	color: #080d14;
+	transition: background-color 150ms ease;
+}
+
+.inline-action:hover {
+	background: #ffd56a;
 }
