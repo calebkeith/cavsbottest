@@ -1,6 +1,7 @@
 import { context, reddit } from '@devvit/web/server';
 import { cavsBotApi, type ScheduleGameResponse, type StandingResponse } from './cavs-api';
 import { currentSeasonType, SEASON_TYPES, seasonTypeLabel } from './season';
+import { parseEasternTime } from '../../shared/time';
 
 const SCHEDULE_WIDGET = 'Schedule';
 const STANDINGS_WIDGET = 'Standings';
@@ -16,9 +17,9 @@ const formatScheduleTable = (games: ScheduleGameResponse[], seasonType: number) 
   const rows = games.map((game) => {
     const isHome = game.homeTeam.abbreviation === 'CLE';
     const opponent = isHome ? game.visitingTeam : game.homeTeam;
-    const date = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(game.startTime));
+    const date = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', year: 'numeric' }).format(parseEasternTime(game.startTime));
     const time = game.gameStatusText?.match(/\b\d{1,2}:\d{2}\s*[AP]\.?M\.?(?:\s*ET)?\b/i)?.[0]
-      ?? `${new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(new Date(game.startTime))} ET`;
+      ?? `${new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(parseEasternTime(game.startTime))} ET`;
     return `| ${date} | ${isHome ? 'vs.' : '@'}${opponent.abbreviation ?? opponent.name ?? 'OPP'} | ${time} |`;
   });
   return [`# ${seasonTypeLabel(seasonType)} Schedule`, '| Date | Opponent | Time |', '| :-- | :-- | :--: |', ...rows].join('\n');
@@ -114,12 +115,12 @@ export const updateSidebarAndWidgets = async () => {
   const scheduleResults = await timed('schedule', Promise.all(SEASON_TYPES.map((seasonType) => cavsBotApi.teamSchedule(String(cavaliers.id), { seasonType }))));
   const schedule = scheduleResults.flat();
   const sorted = schedule
-    .filter((game) => Number.isFinite(new Date(game.startTime).getTime()))
-    .sort((left, right) => new Date(left.startTime).getTime() - new Date(right.startTime).getTime());
+    .filter((game) => Number.isFinite(parseEasternTime(game.startTime).getTime()))
+    .sort((left, right) => parseEasternTime(left.startTime).getTime() - parseEasternTime(right.startTime).getTime());
   const seasonType = currentSeasonType(sorted, now);
   const seasonSchedule = sorted.filter((game) => game.seasonType === seasonType);
-  const past = seasonSchedule.filter((game) => new Date(game.startTime).getTime() < now).slice(-3);
-  const upcoming = seasonSchedule.filter((game) => new Date(game.startTime).getTime() >= now).slice(0, 10);
+  const past = seasonSchedule.filter((game) => parseEasternTime(game.startTime).getTime() < now).slice(-3);
+  const upcoming = seasonSchedule.filter((game) => parseEasternTime(game.startTime).getTime() >= now).slice(0, 10);
   const allScheduleText = formatScheduleTable([...past, ...upcoming], seasonType);
   const standings = await timed('standings', cavsBotApi.standings({ conference: 0 }));
   const standingsText = formatStandings(standings);

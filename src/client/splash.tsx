@@ -3,6 +3,7 @@ import './index.css';
 import { Fragment, StrictMode, useEffect, useState, type PointerEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import { exitExpandedMode } from '@devvit/web/client';
+import { parseEasternTime } from '../shared/time';
 
 const expandedStartedAt = performance.now();
 
@@ -118,7 +119,7 @@ type ThreadResponse = {
 const Skeleton = ({ className }: { className: string }) => <span aria-hidden="true" className={`block animate-pulse rounded bg-[#354052] ${className}`} />;
 
 const seasonFromStartTime = (startTime: string) => {
-  const date = new Date(startTime);
+  const date = parseEasternTime(startTime);
   const startYear = date.getUTCMonth() >= 9 ? date.getUTCFullYear() : date.getUTCFullYear() - 1;
   return `${startYear}-${String(startYear + 1).slice(-2)}`;
 };
@@ -429,7 +430,14 @@ export const Splash = () => {
         }
         if (data.insightsReady) return;
         const clevelandTeamId = data.game.visitingTeam.abbreviation === 'CLE' ? data.game.visitingTeam.id : data.game.homeTeam.id;
-        const query = `visitorTeamId=${data.game.visitingTeam.id}&homeTeamId=${data.game.homeTeam.id}&clevelandTeamId=${clevelandTeamId}&season=${encodeURIComponent(seasonFromStartTime(data.game.startTime))}`;
+        const query = new URLSearchParams({
+          visitorTeamId: String(data.game.visitingTeam.id),
+          homeTeamId: String(data.game.homeTeam.id),
+          visitorTeam: data.game.visitingTeam.abbreviation ?? '',
+          homeTeam: data.game.homeTeam.abbreviation ?? '',
+          clevelandTeamId: String(clevelandTeamId),
+          season: seasonFromStartTime(data.game.startTime),
+        });
         const sections = ['records', 'recent-form', 'past-matchups', 'four-factors'] as const;
         await Promise.all(sections.map(async (section) => {
           const sectionStartedAt = performance.now();
@@ -566,7 +574,7 @@ export const Splash = () => {
   const completedMatchups = matchupGames.filter((game) => game.isFinal && matchupWinner(game));
   const cavsMatchupWins = completedMatchups.filter((game) => matchupWinner(game) === 'CLE').length;
   const cavsMatchupLosses = completedMatchups.length - cavsMatchupWins;
-  const mostRecentMatchup = [...matchupGames].sort((left, right) => new Date(right.startTime).getTime() - new Date(left.startTime).getTime())[0];
+  const mostRecentMatchup = [...matchupGames].sort((left, right) => parseEasternTime(right.startTime).getTime() - parseEasternTime(left.startTime).getTime())[0];
   const isGameDayThread = liveThread?.threadType === 'game-day';
   const isPregameThread = isGameDayThread || (liveThread?.threadType === 'game' && !gameInProgress && !liveStatus?.toLowerCase().includes('final'));
   const probabilityGraph = (liveThread?.threadType === 'game' || liveThread?.threadType === 'post-game') && winProbability.length > 0 ? (() => {
@@ -663,7 +671,7 @@ export const Splash = () => {
           </> : liveThread && isGameDayThread ? <div className="rounded-xl border border-[#354052] bg-[#1a2431] p-4">
             <h2 className="text-sm font-bold uppercase tracking-[0.08em] text-[#aeb8c6]">Pregame matchup</h2>
             <div className="mt-3 flex flex-wrap gap-x-6 gap-y-2 text-sm text-[#c3ccd8]">
-              <span><strong className="text-[#f5f1e8]">Tip-off:</strong> {new Date(liveThread.game.startTime).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>
+              <span><strong className="text-[#f5f1e8]">Tip-off:</strong> {parseEasternTime(liveThread.game.startTime).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' })}</span>
               <span><strong className="text-[#f5f1e8]">Venue:</strong> {arena ? [arena.name, arena.city, arena.state].filter(Boolean).join(', ') || 'Not available' : 'Not available'}</span>
             </div>
           </div> : <>
@@ -683,9 +691,9 @@ export const Splash = () => {
               <h2 className="text-base font-bold">{isPregameThread ? 'Game preview' : liveThread.threadType === 'post-game' || liveThread.threadType === 'next-day' ? 'Game recap' : 'Live insights'}</h2>
               <span className="text-xs text-[#7f8b9a]">Updated {new Date(liveThread.fetchedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>
             </div>
-            {liveThread.recentForm.length > 0 && <div className="mt-3 rounded-lg border border-[#2b3542] bg-[#1a2431] p-3"><h3 className="text-xs font-bold uppercase tracking-[0.08em] text-[#aeb8c6]">Recent Cavs schedule</h3><ul className="mt-2 space-y-1 text-xs">{liveThread.recentForm.slice(0, 5).map((game) => <li className="flex justify-between gap-2"><span>{new Date(game.startTime).toLocaleDateString([], { month: 'short', day: 'numeric' })}</span><span className="truncate text-[#aeb8c6]">{scheduledOpponent(game, 'CLE')}</span></li>)}</ul></div>}
+            {liveThread.recentForm.length > 0 && <div className="mt-3 rounded-lg border border-[#2b3542] bg-[#1a2431] p-3"><h3 className="text-xs font-bold uppercase tracking-[0.08em] text-[#aeb8c6]">Recent Cavs schedule</h3><ul className="mt-2 space-y-1 text-xs">{liveThread.recentForm.slice(0, 5).map((game) => <li className="flex justify-between gap-2"><span>{parseEasternTime(game.startTime).toLocaleDateString([], { month: 'short', day: 'numeric', timeZone: 'America/New_York' })}</span><span className="truncate text-[#aeb8c6]">{scheduledOpponent(game, 'CLE')}</span></li>)}</ul></div>}
             {(liveThread.matchups.length > 0 || factorComparisonEntries(liveThread.fourFactors).length > 0) && <div className="game-context-legacy mt-3 grid gap-3 sm:grid-cols-2">
-              <div className="rounded-lg border border-[#2b3542] bg-[#1a2431] p-3"><h3 className="text-xs font-bold uppercase tracking-[0.08em] text-[#aeb8c6]">Last 10 head-to-head</h3><div className="mt-3 grid grid-cols-2 gap-2 text-xs xl:grid-cols-4">{completedMatchups.length ? <div className="rounded-md bg-[#202d3d] px-3 py-2"><span className="block text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#7f8b9a]">Cavaliers record</span><strong className="mt-1 block text-sm text-[#f5f1e8]">{cavsMatchupWins}-{cavsMatchupLosses}</strong></div> : <div className="rounded-md bg-[#202d3d] px-3 py-2"><span className="block text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#7f8b9a]">Record</span><strong className="mt-1 block text-sm text-[#f5f1e8]">Unavailable</strong></div>}<div className="rounded-md bg-[#202d3d] px-3 py-2"><span className="block text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#7f8b9a]">Meetings</span><strong className="mt-1 block text-sm text-[#f5f1e8]">{matchupGames.length}</strong></div><div className="rounded-md bg-[#202d3d] px-3 py-2"><span className="block text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#7f8b9a]">Home / road</span><strong className="mt-1 block text-sm text-[#f5f1e8]">{cavsHomeMatchups} / {cavsRoadMatchups}</strong></div><div className="rounded-md bg-[#202d3d] px-3 py-2"><span className="block text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#7f8b9a]">Most recent</span><strong className="mt-1 block text-sm text-[#f5f1e8]">{mostRecentMatchup ? new Date(mostRecentMatchup.startTime).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) : 'Unavailable'}</strong></div></div>{matchupGames.length > 0 ? <ul className="mt-3 space-y-1 text-xs">{matchupGames.slice(0, 10).map((game) => { const winner = matchupWinner(game); const visitorWon = winner === game.visitingTeam.abbreviation; const homeWon = winner === game.homeTeam.abbreviation; return <li className="flex justify-between gap-2" key={game.gameId}><span>{new Date(game.startTime).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}</span><span className="truncate text-[#aeb8c6]"><strong className={visitorWon ? 'font-bold text-[#f5f1e8]' : 'font-normal'}>{game.visitingTeam.abbreviation} {game.visitingScore ?? '-'}</strong> - <strong className={homeWon ? 'font-bold text-[#f5f1e8]' : 'font-normal'}>{game.homeScore ?? '-'} {game.homeTeam.abbreviation}</strong>{game.gameLabel ? ` · ${game.gameLabel}` : ''}</span></li>; })}</ul> : <p className="mt-2 text-xs text-[#7f8b9a]">No matchup history available.</p>}</div>
+              <div className="rounded-lg border border-[#2b3542] bg-[#1a2431] p-3"><h3 className="text-xs font-bold uppercase tracking-[0.08em] text-[#aeb8c6]">Last 10 head-to-head</h3><div className="mt-3 grid grid-cols-2 gap-2 text-xs xl:grid-cols-4">{completedMatchups.length ? <div className="rounded-md bg-[#202d3d] px-3 py-2"><span className="block text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#7f8b9a]">Cavaliers record</span><strong className="mt-1 block text-sm text-[#f5f1e8]">{cavsMatchupWins}-{cavsMatchupLosses}</strong></div> : <div className="rounded-md bg-[#202d3d] px-3 py-2"><span className="block text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#7f8b9a]">Record</span><strong className="mt-1 block text-sm text-[#f5f1e8]">Unavailable</strong></div>}<div className="rounded-md bg-[#202d3d] px-3 py-2"><span className="block text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#7f8b9a]">Meetings</span><strong className="mt-1 block text-sm text-[#f5f1e8]">{matchupGames.length}</strong></div><div className="rounded-md bg-[#202d3d] px-3 py-2"><span className="block text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#7f8b9a]">Home / road</span><strong className="mt-1 block text-sm text-[#f5f1e8]">{cavsHomeMatchups} / {cavsRoadMatchups}</strong></div><div className="rounded-md bg-[#202d3d] px-3 py-2"><span className="block text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#7f8b9a]">Most recent</span><strong className="mt-1 block text-sm text-[#f5f1e8]">{mostRecentMatchup ? parseEasternTime(mostRecentMatchup.startTime).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'America/New_York' }) : 'Unavailable'}</strong></div></div>{matchupGames.length > 0 ? <ul className="mt-3 space-y-1 text-xs">{matchupGames.slice(0, 10).map((game) => { const winner = matchupWinner(game); const visitorWon = winner === game.visitingTeam.abbreviation; const homeWon = winner === game.homeTeam.abbreviation; return <li className="flex justify-between gap-2" key={game.gameId}><span>{parseEasternTime(game.startTime).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'America/New_York' })}</span><span className="truncate text-[#aeb8c6]"><strong className={visitorWon ? 'font-bold text-[#f5f1e8]' : 'font-normal'}>{game.visitingTeam.abbreviation} {game.visitingScore ?? '-'}</strong> - <strong className={homeWon ? 'font-bold text-[#f5f1e8]' : 'font-normal'}>{game.homeScore ?? '-'} {game.homeTeam.abbreviation}</strong>{game.gameLabel ? ` · ${game.gameLabel}` : ''}</span></li>; })}</ul> : <p className="mt-2 text-xs text-[#7f8b9a]">No matchup history available.</p>}</div>
               {factorComparisonEntries(liveThread.fourFactors).length > 0 && <div className="rounded-lg border border-[#2b3542] bg-[#1a2431] p-3"><h3 className="text-xs font-bold uppercase tracking-[0.08em] text-[#aeb8c6]">Four factors</h3><div className="mt-2 grid grid-cols-[minmax(0,1fr)_auto_auto] gap-x-3 text-xs"><span className="border-b border-[#354052] pb-1 font-semibold text-[#aeb8c6]">Stat</span><span className="border-b border-[#354052] pb-1 text-right font-semibold text-[#c3ccd8]">CLE</span><span className="border-b border-[#354052] pb-1 text-right font-semibold text-[#c3ccd8]">OPP</span>{factorComparisonEntries(liveThread.fourFactors).slice(0, 8).map(([label, cavaliersValue, opponentValue]) => <Fragment key={label}><span className="border-b border-[#2b3542] py-1">{label}</span><strong className={`border-b border-[#2b3542] py-1 text-right ${factorValueClass(cavaliersValue, opponentValue)}`}>{String(cavaliersValue)}</strong><strong className={`border-b border-[#2b3542] py-1 text-right ${factorValueClass(opponentValue, cavaliersValue)}`}>{String(opponentValue)}</strong></Fragment>)}</div></div>}
             </div>}
             {!isPregameThread && <>
@@ -719,12 +727,12 @@ export const Splash = () => {
                   <div className="rounded-md bg-[#202d3d] px-3 py-2"><span className="block text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#7f8b9a]">Cavaliers record</span><strong className="mt-1 block text-sm text-[#f5f1e8]">{completedMatchups.length ? `${cavsMatchupWins}-${cavsMatchupLosses}` : 'Unavailable'}</strong></div>
                   <div className="rounded-md bg-[#202d3d] px-3 py-2"><span className="block text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#7f8b9a]">Meetings</span><strong className="mt-1 block text-sm text-[#f5f1e8]">{matchupGames.length}</strong></div>
                   <div className="rounded-md bg-[#202d3d] px-3 py-2"><span className="block text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#7f8b9a]">Home / road</span><strong className="mt-1 block text-sm text-[#f5f1e8]">{cavsHomeMatchups} / {cavsRoadMatchups}</strong></div>
-                  <div className="rounded-md bg-[#202d3d] px-3 py-2"><span className="block text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#7f8b9a]">Most recent</span><strong className="mt-1 block text-sm text-[#f5f1e8]">{mostRecentMatchup ? new Date(mostRecentMatchup.startTime).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) : 'Unavailable'}</strong></div>
+                  <div className="rounded-md bg-[#202d3d] px-3 py-2"><span className="block text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#7f8b9a]">Most recent</span><strong className="mt-1 block text-sm text-[#f5f1e8]">{mostRecentMatchup ? parseEasternTime(mostRecentMatchup.startTime).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'America/New_York' }) : 'Unavailable'}</strong></div>
                 </div>
                 <ul className="mt-3 space-y-1 text-xs text-[#c3ccd8]">
                   {matchupGames.slice(0, 10).map((game) => {
                     const winner = matchupWinner(game);
-                    return <li className="flex justify-between gap-3" key={game.gameId ?? game.startTime}><span>{new Date(game.startTime).toLocaleDateString([], { month: 'short', day: 'numeric' })}</span><span className="text-right">{game.visitingTeam.abbreviation} {game.visitingScore ?? '-'} - {game.homeScore ?? '-'} {game.homeTeam.abbreviation} <strong className={winner === 'CLE' ? 'text-[#8fd694]' : 'text-[#ff9d93]'}>{winner === 'CLE' ? 'W' : winner ? 'L' : '-'}</strong></span></li>;
+                    return <li className="flex justify-between gap-3" key={game.gameId ?? game.startTime}><span>{parseEasternTime(game.startTime).toLocaleDateString([], { month: 'short', day: 'numeric', timeZone: 'America/New_York' })}</span><span className="text-right">{game.visitingTeam.abbreviation} {game.visitingScore ?? '-'} - {game.homeScore ?? '-'} {game.homeTeam.abbreviation} <strong className={winner === 'CLE' ? 'text-[#8fd694]' : 'text-[#ff9d93]'}>{winner === 'CLE' ? 'W' : winner ? 'L' : '-'}</strong></span></li>;
                   })}
                 </ul>
               </div>}

@@ -3,6 +3,7 @@ import './index.css';
 import { StrictMode, useEffect, useState, type MouseEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import { requestExpandedMode } from '@devvit/web/client';
+import { parseEasternTime } from '../shared/time';
 
 const inlineStartedAt = performance.now();
 
@@ -109,7 +110,7 @@ const teamName = (team: Team) => team.fullName ?? team.name ?? team.abbreviation
 const teamAbbreviation = (team: Team) => team.abbreviation ?? team.name?.slice(0, 3).toUpperCase() ?? '---';
 
 const seasonFromStartTime = (startTime: string) => {
-  const date = new Date(startTime);
+  const date = parseEasternTime(startTime);
   const startYear = date.getUTCMonth() >= 9 ? date.getUTCFullYear() : date.getUTCFullYear() - 1;
   return `${startYear}-${String(startYear + 1).slice(-2)}`;
 };
@@ -142,7 +143,7 @@ const matchupSummary = (matchups: ScheduleGame[]) => {
   };
 };
 
-const shortDate = (startTime: string) => new Date(startTime).toLocaleDateString([], { month: 'short', day: 'numeric' });
+const shortDate = (startTime: string) => parseEasternTime(startTime).toLocaleDateString([], { month: 'short', day: 'numeric', timeZone: 'America/New_York' });
 
 const matchupLabel = (game: ScheduleGame) => {
   const opponent = game.homeTeam.abbreviation === 'CLE' ? game.visitingTeam : game.homeTeam;
@@ -188,10 +189,10 @@ const factorComparisonEntries = (factors: FourFactors | null | undefined) => {
 };
 
 const formatTipOff = (startTime: string) => {
-  const date = new Date(startTime);
+  const date = parseEasternTime(startTime);
   return Number.isNaN(date.getTime())
     ? 'Tip-off time unavailable'
-    : date.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    : date.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' });
 };
 
 const periodLabel = (period: number) => period <= 4 ? `${period}Q` : `OT${period - 4}`;
@@ -327,6 +328,8 @@ export const App = () => {
           const query = new URLSearchParams({
             visitorTeamId: String(visitorTeamId),
             homeTeamId: String(homeTeamId),
+            visitorTeam: data.game.visitingTeam.abbreviation ?? '',
+            homeTeam: data.game.homeTeam.abbreviation ?? '',
             clevelandTeamId: String(clevelandTeamId),
             season: seasonFromStartTime(data.game.startTime),
           });

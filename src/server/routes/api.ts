@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { context, redis, reddit } from '@devvit/web/server';
 import { cavsBotApi } from '../core/cavs-api';
+import { parseEasternTime } from '../../shared/time';
 import { testBoxScore, testGame } from '../core/test-game';
 import { testPlayByPlay } from '../core/test-play-by-play';
 import type {
@@ -27,7 +28,7 @@ const insightCacheTtlSeconds = (threadType: string) => threadType === 'game' ? 5
 const winProbabilityTimelineKey = (gameId: string) => `cavsbot:win-probability:${gameId}`;
 const winProbabilityRefreshAt = new Map<string, number>();
 const seasonFromStartTime = (startTime: string) => {
-  const date = new Date(startTime);
+  const date = parseEasternTime(startTime);
   const startYear = date.getUTCMonth() >= 9 ? date.getUTCFullYear() : date.getUTCFullYear() - 1;
   return `${startYear}-${String(startYear + 1).slice(-2)}`;
 };
@@ -225,6 +226,8 @@ api.get('/thread/insights', async (c) => {
   const visitorTeamId = Number(c.req.query('visitorTeamId'));
   const homeTeamId = Number(c.req.query('homeTeamId'));
   if (!Number.isInteger(visitorTeamId) || !Number.isInteger(homeTeamId)) return c.json<ErrorResponse>({ status: 'error', message: 'Team ids are required' }, 400);
+  const visitorTeam = c.req.query('visitorTeam') || String(visitorTeamId);
+  const homeTeam = c.req.query('homeTeam') || String(homeTeamId);
   const cacheKey = threadInsightsCacheKey(gameId, threadType);
 
   try {
@@ -235,7 +238,7 @@ api.get('/thread/insights', async (c) => {
     }
     console.log(`[thread-cache] miss ${cacheKey}`);
     const matchupSeasonType = postData?.seasonType === 2 || postData?.seasonType === 3 ? 3 : undefined;
-    const pastMatchups = (team: number, opponent: number) => cavsBotApi.request<typeof testGame[]>(`/api/v1/teams/${encodeURIComponent(String(team))}/matchups/${encodeURIComponent(String(opponent))}/past`, { count: 10, seasonType: matchupSeasonType });
+    const pastMatchups = (team: string, opponent: string) => cavsBotApi.request<typeof testGame[]>(`/api/v1/teams/${encodeURIComponent(team)}/matchups/${encodeURIComponent(opponent)}/past`, { count: 10, seasonType: matchupSeasonType });
     const requestedClevelandTeamId = Number(c.req.query('clevelandTeamId'));
     const recentFormTeamId = Number.isInteger(requestedClevelandTeamId) ? requestedClevelandTeamId : visitorTeamId;
     const teams = [{ id: visitorTeamId, abbreviation: 'CLE' }, { id: homeTeamId, abbreviation: 'OPP' }];
@@ -244,7 +247,7 @@ api.get('/thread/insights', async (c) => {
       ...teams.map((team) => timed(`record-${team.abbreviation}`, isTestFixture ? cavsBotApi.record(String(team.id)).catch(() => ({ team: team.abbreviation, record: null, wins: '0', losses: '0' })) : cavsBotApi.record(String(team.id)))),
       timed('standings', isTestFixture ? cavsBotApi.standings().catch(() => []) : cavsBotApi.standings()),
       timed('recent-form', isTestFixture ? cavsBotApi.recentForm(String(recentFormTeamId), 5).catch(() => []) : cavsBotApi.recentForm(String(recentFormTeamId), 5)),
-      isTestFixture ? timed('past-matchups', pastMatchups(visitorTeamId, homeTeamId).catch(() => [testGame])) : timed('past-matchups', pastMatchups(visitorTeamId, homeTeamId)),
+      isTestFixture ? timed('past-matchups', pastMatchups(visitorTeam, homeTeam).catch(() => [testGame])) : timed('past-matchups', pastMatchups(visitorTeam, homeTeam)),
       timed(`four-factors-${gameSeason}`, isTestFixture ? cavsBotApi.teamFourFactors(String(visitorTeamId), { season: gameSeason }).catch(() => null) : cavsBotApi.teamFourFactors(String(visitorTeamId), { season: gameSeason })),
     ]);
     const enrichmentValue = <T,>(index: number, fallback: T) => {
@@ -277,6 +280,8 @@ api.get('/thread/insight', async (c) => {
   const visitorTeamId = Number(c.req.query('visitorTeamId'));
   const homeTeamId = Number(c.req.query('homeTeamId'));
   if (!Number.isInteger(visitorTeamId) || !Number.isInteger(homeTeamId)) return c.json<ErrorResponse>({ status: 'error', message: 'Team ids are required' }, 400);
+  const visitorTeam = c.req.query('visitorTeam') || String(visitorTeamId);
+  const homeTeam = c.req.query('homeTeam') || String(homeTeamId);
   const cacheKey = threadInsightSectionCacheKey(gameId, threadType, section);
   const sectionCacheKey = section === 'four-factors'
     ? threadInsightSectionCacheKey(gameId, threadType, 'four-factors-v3')
@@ -309,8 +314,8 @@ api.get('/thread/insight', async (c) => {
       response = { recentForm: await timed('recent-form', isTestFixture ? cavsBotApi.recentForm(String(recentFormTeamId), 5).catch(() => []) : cavsBotApi.recentForm(String(recentFormTeamId), 5)) };
     } else if (section === 'past-matchups') {
       const matchups = await timed('past-matchups', isTestFixture
-        ? cavsBotApi.request<typeof testGame[]>(`/api/v1/teams/${visitorTeamId}/matchups/${homeTeamId}/past`, { count: 10, seasonType: matchupSeasonType }).catch(() => [testGame])
-        : cavsBotApi.request<typeof testGame[]>(`/api/v1/teams/${visitorTeamId}/matchups/${homeTeamId}/past`, { count: 10, seasonType: matchupSeasonType }));
+        ? cavsBotApi.request<typeof testGame[]>(`/api/v1/teams/${encodeURIComponent(visitorTeam)}/matchups/${encodeURIComponent(homeTeam)}/past`, { count: 10, seasonType: matchupSeasonType }).catch(() => [testGame])
+        : cavsBotApi.request<typeof testGame[]>(`/api/v1/teams/${encodeURIComponent(visitorTeam)}/matchups/${encodeURIComponent(homeTeam)}/past`, { count: 10, seasonType: matchupSeasonType }));
       response = { matchups: matchups.filter((matchup) => matchup.seasonType !== 2) };
     } else {
       const clevelandTeamId = Number(c.req.query('clevelandTeamId'));
@@ -366,7 +371,7 @@ api.get('/thread', async (c) => {
     const gameSeason = seasonFromStartTime(game.startTime);
     const teams = [visitorGameTeam, homeGameTeam];
     const matchupSeasonType = game.seasonType === 2 || game.seasonType === 3 ? 3 : undefined;
-    const pastMatchups = (team: number, opponent: number) => cavsBotApi.request<typeof testGame[]>(`/api/v1/teams/${encodeURIComponent(String(team))}/matchups/${encodeURIComponent(String(opponent))}/past`, { count: 10, seasonType: matchupSeasonType });
+    const pastMatchups = (team: string, opponent: string) => cavsBotApi.request<typeof testGame[]>(`/api/v1/teams/${encodeURIComponent(team)}/matchups/${encodeURIComponent(opponent)}/past`, { count: 10, seasonType: matchupSeasonType });
     const enrichment = await Promise.allSettled([
       ...teams.map((team) => timed(`record-${team.abbreviation}`, isTestFixture
         ? cavsBotApi.record(String(team.id)).catch(() => ({ team: team.abbreviation, record: null, wins: '0', losses: '0' }))
@@ -374,8 +379,8 @@ api.get('/thread', async (c) => {
       timed('standings', isTestFixture ? cavsBotApi.standings().catch(() => []) : cavsBotApi.standings()),
       timed('recent-form', isTestFixture ? cavsBotApi.recentForm(String(visitorGameTeam.id), 5).catch(() => []) : cavsBotApi.recentForm(String(visitorGameTeam.id), 5)),
       isTestFixture
-        ? timed('past-matchups', pastMatchups(visitorGameTeam.id, homeGameTeam.id).catch(() => [testGame]))
-        : timed('past-matchups', pastMatchups(visitorGameTeam.id, homeGameTeam.id)),
+        ? timed('past-matchups', pastMatchups(visitorGameTeam.abbreviation ?? String(visitorGameTeam.id), homeGameTeam.abbreviation ?? String(homeGameTeam.id)).catch(() => [testGame]))
+        : timed('past-matchups', pastMatchups(visitorGameTeam.abbreviation ?? String(visitorGameTeam.id), homeGameTeam.abbreviation ?? String(homeGameTeam.id))),
       timed(`four-factors-${gameSeason}`, isTestFixture
         ? cavsBotApi.teamFourFactors(String(visitorGameTeam.id), { season: gameSeason }).catch(() => null)
         : cavsBotApi.teamFourFactors(String(visitorGameTeam.id), { season: gameSeason })),

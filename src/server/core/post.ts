@@ -3,6 +3,7 @@ import { EntrypointHeight } from '@devvit/protos/json/reddit/devvit/post/v1/post
 import { cavsBotApi, type BoxScoreResponse, type ScheduleGameResponse } from './cavs-api';
 import { SEASON_TYPES, seasonTypeLabel } from './season';
 import { testBoxScore, testGame } from './test-game';
+import { parseEasternTime } from '../../shared/time';
 
 const THREADS_HASH = 'cavsbot:game-threads';
 const easternDateTime = new Intl.DateTimeFormat('en-US', {
@@ -199,7 +200,7 @@ export const createGameThread = async (game: ScheduleGameResponse, testFixture =
       ? testBoxScore
       : await cavsBotApi.boxScore(game.gameId).catch(() => undefined);
     const post = await reddit.submitCustomPost({
-      title: `[Game Thread${seasonLabel(game.seasonType)}] ${matchup(game)} [${formatParts(easternDateTime, new Date(game.startTime))} ET]`,
+      title: `[Game Thread${seasonLabel(game.seasonType)}] ${matchup(game)} [${formatParts(easternDateTime, parseEasternTime(game.startTime))} ET]`,
       entry: 'default',
       postData: { gameId: game.gameId, threadType: 'game', seasonType: game.seasonType, testFixture },
       textFallback: { text: gameThreadText(game, initialBoxScore) },
@@ -223,7 +224,7 @@ export const createPostGameThread = async (game: ScheduleGameResponse, boxScore:
   if (!game.gameId || !(await reserveThread(game.gameId, 'post-game'))) return null;
   try {
     const post = await reddit.submitCustomPost({
-      title: `[Post Game Thread${seasonLabel(game.seasonType)}] ${matchup(game)} [${formatParts(easternDate, new Date(game.startTime))}]`,
+      title: `[Post Game Thread${seasonLabel(game.seasonType)}] ${matchup(game)} [${formatParts(easternDate, parseEasternTime(game.startTime))}]`,
       entry: 'default',
       postData: { gameId: game.gameId, threadType: 'post-game', seasonType: game.seasonType, isAvailable: boxScore.isAvailable, testFixture },
       textFallback: { text: postGameText(game, boxScore) },
@@ -246,7 +247,7 @@ export const createNextDayDiscussionThread = async (game: ScheduleGameResponse, 
   if (!game.gameId || !(await reserveThread(game.gameId, 'next-day'))) return null;
   try {
     const post = await reddit.submitCustomPost({
-      title: `[Next Day Discussion${seasonLabel(game.seasonType)}] ${matchup(game)} [${formatParts(easternDate, new Date(game.startTime))}]`,
+      title: `[Next Day Discussion${seasonLabel(game.seasonType)}] ${matchup(game)} [${formatParts(easternDate, parseEasternTime(game.startTime))}]`,
       entry: 'default',
       postData: { gameId: game.gameId, threadType: 'next-day', seasonType: game.seasonType, isAvailable: boxScore.isAvailable, testFixture },
       textFallback: { text: nextDayText(game, boxScore) },
@@ -269,7 +270,7 @@ export const createGameDayThread = async (game: ScheduleGameResponse, testFixtur
   if (!game.gameId || !(await reserveThread(game.gameId, 'game-day'))) return null;
   try {
     const post = await reddit.submitCustomPost({
-      title: `[Game Day Thread${seasonLabel(game.seasonType)}] ${matchup(game)} [${formatParts(easternDateTime, new Date(game.startTime))} ET]`,
+      title: `[Game Day Thread${seasonLabel(game.seasonType)}] ${matchup(game)} [${formatParts(easternDateTime, parseEasternTime(game.startTime))} ET]`,
       entry: 'default',
       postData: { gameId: game.gameId, threadType: 'game-day', seasonType: game.seasonType, testFixture },
       textFallback: { text: gameDayText(game) },
@@ -333,27 +334,27 @@ export const createScheduledThreads = async () => {
 
   const scheduleResults = await Promise.all(SEASON_TYPES.map((seasonType) => cavsBotApi.teamSchedule(String(cavaliers.id), { seasonType })));
   const schedule = scheduleResults.flat()
-    .filter((game) => game.gameId && Number.isFinite(new Date(game.startTime).getTime()))
-    .sort((left, right) => new Date(left.startTime).getTime() - new Date(right.startTime).getTime());
+    .filter((game) => game.gameId && Number.isFinite(parseEasternTime(game.startTime).getTime()))
+    .sort((left, right) => parseEasternTime(left.startTime).getTime() - parseEasternTime(right.startTime).getTime());
   const now = Date.now();
-  const nextGame = schedule.find((game) => new Date(game.startTime).getTime() >= now);
-  if (nextGame && new Date(nextGame.startTime).getTime() - now <= 2 * 60 * 60 * 1000) {
+  const nextGame = schedule.find((game) => parseEasternTime(game.startTime).getTime() >= now);
+  if (nextGame && parseEasternTime(nextGame.startTime).getTime() - now <= 2 * 60 * 60 * 1000) {
     await createGameThread(nextGame);
     await updateGameThreadFallback(nextGame);
   }
 
   const todayKey = easternDateKey(new Date(now));
   for (const game of schedule) {
-    const gameDate = easternDateKey(new Date(game.startTime));
-    if (gameDate === todayKey && easternHour(new Date(now)) >= 10 && new Date(game.startTime).getTime() > now) {
+    const gameDate = easternDateKey(parseEasternTime(game.startTime));
+    if (gameDate === todayKey && easternHour(new Date(now)) >= 10 && parseEasternTime(game.startTime).getTime() > now) {
       await createGameDayThread(game);
     }
-    if (new Date(game.startTime).getTime() >= now) continue;
+    if (parseEasternTime(game.startTime).getTime() >= now) continue;
 
     const boxScore = await cavsBotApi.boxScore(game.gameId!);
     if (!isCompleted(boxScore)) continue;
     await updateGameThreadFallback(game, boxScore);
-    if (new Date(game.startTime).getTime() < now) {
+    if (parseEasternTime(game.startTime).getTime() < now) {
       await createPostGameThread(game, boxScore);
       await updateCompletedThreadFallback(game, boxScore, 'post-game');
     }
