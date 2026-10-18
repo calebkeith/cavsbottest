@@ -18,6 +18,7 @@
     "esModuleInterop": true,
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "rewriteRelativeImportExtensions": true,
     "skipLibCheck": true,
     "skipDefaultLibCheck": true,
     "sourceMap": true,

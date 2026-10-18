@@ -61,28 +61,28 @@
       },
       {
         "label": "TEST: Create game thread",
-        "description": "Create a fixture-backed game thread for 0042500304",
+        "description": "Create a game thread for the next scheduled Cavaliers game",
         "location": "subreddit",
         "forUserType": "moderator",
         "endpoint": "/internal/menu/test-game-thread"
       },
       {
         "label": "TEST: Create game day thread",
-        "description": "Create a fixture-backed game day thread for 0042500304",
+        "description": "Create a game day thread for the next scheduled Cavaliers game",
         "location": "subreddit",
         "forUserType": "moderator",
         "endpoint": "/internal/menu/test-game-day-thread"
       },
       {
         "label": "TEST: Create next day thread",
-        "description": "Create a fixture-backed next day discussion for 0042500304",
+        "description": "Create a next day discussion for the next scheduled Cavaliers game",
         "location": "subreddit",
         "forUserType": "moderator",
         "endpoint": "/internal/menu/test-next-day-thread"
       },
       {
         "label": "TEST: Create post game thread",
-        "description": "Create a fixture-backed post game thread for 0042500304",
+        "description": "Create a post game thread for the next scheduled Cavaliers game",
         "location": "subreddit",
         "forUserType": "moderator",
         "endpoint": "/internal/menu/test-post-game-thread"

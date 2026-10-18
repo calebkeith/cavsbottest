@@ -1,5 +1,5 @@
-import type { ScheduleGameResponse } from './cavs-api';
-import { parseEasternTime } from '../../shared/time';
+import type { ScheduleGameResponse } from './cavs-api.ts';
+import { parseEasternTime } from '../../shared/time.ts';
 
 export const PRESEASON = 2;
 export const REGULAR_SEASON = 3;
@@ -10,9 +10,12 @@ const validGames = (schedule: ScheduleGameResponse[]) => schedule
   .filter((game) => game.gameId && Number.isFinite(parseEasternTime(game.startTime).getTime()))
   .sort((left, right) => parseEasternTime(left.startTime).getTime() - parseEasternTime(right.startTime).getTime());
 
+export const nextScheduledGame = (schedule: ScheduleGameResponse[], now = Date.now()) =>
+  validGames(schedule).find((game) => parseEasternTime(game.startTime).getTime() >= now);
+
 export const currentSeasonType = (schedule: ScheduleGameResponse[], now = Date.now()) => {
   const sorted = validGames(schedule);
-  const nextGame = sorted.find((game) => parseEasternTime(game.startTime).getTime() >= now);
+  const nextGame = nextScheduledGame(sorted, now);
   return nextGame?.seasonType ?? sorted.at(-1)?.seasonType ?? REGULAR_SEASON;
 };
 

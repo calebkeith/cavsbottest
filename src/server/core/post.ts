@@ -1,8 +1,8 @@
 import { reddit, redis } from '@devvit/web/server';
 import { EntrypointHeight } from '@devvit/protos/json/reddit/devvit/post/v1/post.js';
 import { cavsBotApi, type BoxScoreResponse, type ScheduleGameResponse } from './cavs-api';
-import { SEASON_TYPES, seasonTypeLabel } from './season';
-import { testBoxScore, testGame } from './test-game';
+import { nextScheduledGame, SEASON_TYPES, seasonTypeLabel } from './season';
+import { testBoxScore } from './test-game';
 import { parseEasternTime } from '../../shared/time';
 
 const THREADS_HASH = 'cavsbot:game-threads';
@@ -289,13 +289,28 @@ export const createGameDayThread = async (game: ScheduleGameResponse, testFixtur
   }
 };
 
-export const createTestThread = async (kind: TestThreadKind) => {
-  await redis.hDel(THREADS_HASH, [`${testGame.gameId}:${kind}`]);
-  if (kind === 'game') return createGameThread(testGame, true);
-  if (kind === 'game-day') return createGameDayThread(testGame, true);
-  if (kind === 'next-day') return createNextDayDiscussionThread(testGame, testBoxScore, true);
-  return createPostGameThread(testGame, testBoxScore, true);
+const getNextCavaliersGame = async () => {
+  const teams = await cavsBotApi.teams();
+  const cavaliers = teams.find((team) => team.abbreviation === 'CLE' || team.fullName?.toLowerCase() === 'cleveland cavaliers');
+  if (!cavaliers) throw new Error('Cleveland Cavaliers team was not returned by the NBA API');
+
+  const scheduleResults = await Promise.all(SEASON_TYPES.map((seasonType) => cavsBotApi.teamSchedule(String(cavaliers.id), { seasonType })));
+  const game = nextScheduledGame(scheduleResults.flat());
+  if (!game) throw new Error('No upcoming Cavaliers game was returned by the NBA API');
+  return game;
 };
+
+export const createTestThread = async (kind: TestThreadKind, selectedGame?: ScheduleGameResponse) => {
+  const game = selectedGame ?? await getNextCavaliersGame();
+  if (kind === 'game') return createGameThread(game);
+  if (kind === 'game-day') return createGameDayThread(game);
+
+  const boxScore = await cavsBotApi.boxScore(game.gameId!);
+  if (kind === 'next-day') return createNextDayDiscussionThread(game, boxScore);
+  return createPostGameThread(game, boxScore);
+};
+
+export const getNextTestGame = getNextCavaliersGame;
 
 const isCompleted = (boxScore: BoxScoreResponse) => {
   const state = `${boxScore.gameState ?? ''} ${boxScore.gameStatusText ?? ''}`.toLowerCase();
@@ -337,7 +352,7 @@ export const createScheduledThreads = async () => {
     .filter((game) => game.gameId && Number.isFinite(parseEasternTime(game.startTime).getTime()))
     .sort((left, right) => parseEasternTime(left.startTime).getTime() - parseEasternTime(right.startTime).getTime());
   const now = Date.now();
-  const nextGame = schedule.find((game) => parseEasternTime(game.startTime).getTime() >= now);
+  const nextGame = nextScheduledGame(schedule, now);
   if (nextGame && parseEasternTime(nextGame.startTime).getTime() - now <= 2 * 60 * 60 * 1000) {
     await createGameThread(nextGame);
     await updateGameThreadFallback(nextGame);

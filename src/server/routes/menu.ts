@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { UiResponse } from '@devvit/web/shared';
 import { context, redis } from '@devvit/web/server';
-import { createPost, createTestThread, type TestThreadKind } from '../core/post';
+import { createPost, createTestThread, getNextTestGame, type TestThreadKind } from '../core/post';
 import { updateSidebarAndWidgets } from '../core/sidebar';
 import { threadCacheGenerationKey, threadCoreCacheKey, threadDataCacheKey, threadInsightSectionCacheKey, threadInsightsCacheKey } from './api';
 
@@ -66,8 +66,9 @@ menu.post('/thread-cache-clear', async (c) => {
 
 const testThread = (kind: TestThreadKind) => async (c: Context) => {
   try {
-    const post = await createTestThread(kind);
-    if (!post) return c.json<UiResponse>({ showToast: 'Test thread already exists for game 0042500304' }, 200);
+    const nextGame = await getNextTestGame();
+    const post = await createTestThread(kind, nextGame);
+    if (!post) return c.json<UiResponse>({ showToast: `Test ${kind} thread already exists for ${nextGame.gameId}` }, 200);
     return c.json<UiResponse>({ navigateTo: `https://reddit.com/r/${context.subredditName}/comments/${post.id}` }, 200);
   } catch (error) {
     console.error(`Test ${kind} thread creation failed:`, error);

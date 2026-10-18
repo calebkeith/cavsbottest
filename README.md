@@ -97,4 +97,4 @@ Moderators receive Reddit subreddit and post menu actions for operational contro
 - **TEST: Create next day thread**
 - **TEST: Create post game thread**
 
-The test actions use the fixture game `0042500304` and navigate the moderator to the generated Reddit post. They are intended to verify rendering, fallbacks, box scores, play-by-play, insights, and the probability graph without waiting for a live NBA game.
+The test actions resolve the next scheduled Cavaliers game from the live schedule and navigate the moderator to the generated Reddit post. They are intended to verify rendering, fallbacks, box scores, play-by-play, insights, and the probability graph against the current schedule.

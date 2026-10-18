@@ -4,10 +4,8 @@ const easternOffset = new Intl.DateTimeFormat('en-US', {
 });
 
 export const parseEasternTime = (value: string) => {
-  if (/[zZ]|[+-]\d{2}:?\d{2}$/.test(value)) return new Date(value);
-
   const match = value.match(
-    /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?)?$/
+    /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?)?(?:Z|[+-]\d{2}:?\d{2})?$/
   );
   if (!match) return new Date(value);
 
