@@ -262,7 +262,15 @@ const clockSeconds = (value: string) => {
   return clockMatch ? Number(clockMatch[1]) * 60 + Number(clockMatch[2]) : null;
 };
 
-type ClutchMoment = { text: string; reason: string; rank: number };
+type ClutchMoment = {
+  text: string;
+  reason: string;
+  rank: number;
+  period: number;
+  clock: string;
+  homeScore: number;
+  awayScore: number;
+};
 
 const rankedClutchMoments = (events: PlayByPlayEvent[]): ClutchMoment[] => {
   const candidates: ClutchMoment[] = [];
@@ -304,9 +312,9 @@ const rankedClutchMoments = (events: PlayByPlayEvent[]): ClutchMoment[] => {
         : action === 'block' ? 'clutch block'
           : isScoringPlay ? 'clutch scoring play'
             : '';
-    if (clutch && reason) {
+    if (clutch && reason && homeScore !== null && awayScore !== null && period > 0 && clock) {
       const impact = (gameWinner ? 20 : 0) + (action === '3pt' && madeShot ? 7 : 0) + (action === 'steal' || action === 'block' ? 6 : 0) + (action === 'turnover' ? 4 : 0) + points * 2;
-      candidates.push({ text: playByPlayText(event), reason, rank: impact });
+      candidates.push({ text: playByPlayText(event), reason, rank: impact, period, clock, homeScore, awayScore });
     }
     previousHomeScore = homeScore ?? previousHomeScore;
     previousAwayScore = awayScore ?? previousAwayScore;
@@ -709,7 +717,22 @@ export const Splash = () => {
               <div className="mt-4 grid gap-4 sm:grid-cols-2">
                 <div><h3 className="text-xs font-bold uppercase tracking-[0.08em] text-[#aeb8c6]">Shooting comparison</h3><table className="mt-2 w-full text-xs"><thead><tr className="text-left text-[#7f8b9a]"><th className="py-1 font-normal">Split</th><th className="px-2 py-1 text-right font-normal">{visitorTeamAbbreviation}</th><th className="py-1 text-right font-normal">{homeTeamAbbreviation}</th></tr></thead><tbody>{[['FG%', visitorShooting.field], ['3P%', visitorShooting.three], ['FT%', visitorShooting.free]].map(([label, values]) => { const split = values as typeof visitorShooting.field; const homeSplit = homeShooting[label === 'FG%' ? 'field' : label === '3P%' ? 'three' : 'free']; const visitorWins = split.value !== null && homeSplit.value !== null && split.value > homeSplit.value; const homeWins = split.value !== null && homeSplit.value !== null && homeSplit.value > split.value; return <tr className="border-t border-[#2b3542]" key={label as string}><th className="py-1 text-left font-normal text-[#c3ccd8]">{label as string}</th><td className={`px-2 py-1 text-right ${visitorWins ? 'font-bold text-[#FDBB30]' : 'text-white'}`}>{split.display}</td><td className={`py-1 text-right ${homeWins ? 'font-bold text-[#FDBB30]' : 'text-white'}`}>{homeSplit.display}</td></tr>; })}</tbody></table></div>
                 <div><h3 className="text-xs font-bold uppercase tracking-[0.08em] text-[#aeb8c6]">Quarter story</h3><div className="mt-2 grid grid-cols-2 gap-1 text-xs">{periodLabels.map((label, index) => { const visitorScore = Number(visitorPeriodScores[index]); const homeScore = Number(homePeriodScores[index]); const visitorWins = Number.isFinite(visitorScore) && visitorScore > homeScore; const homeWins = Number.isFinite(homeScore) && homeScore > visitorScore; return <div className="flex justify-between rounded bg-[#1a2431] px-2 py-1" key={label}><span>{label}</span><span><strong className={visitorWins ? 'font-bold text-[#FDBB30]' : 'font-normal text-white'}>{visitorPeriodScores[index]}</strong><span className="text-white"> - </span><strong className={homeWins ? 'font-bold text-[#FDBB30]' : 'font-normal text-white'}>{homePeriodScores[index]}</strong></span></div>; })}</div></div>
-                <div className="sm:col-span-2"><h3 className="text-xs font-bold uppercase tracking-[0.08em] text-[#aeb8c6]">Clutch moments</h3><ul className="mt-2 space-y-1 text-xs text-[#c3ccd8]">{clutchMoments.length ? clutchMoments.map((moment, index) => <li className="truncate" key={`clutch-${index}`} title={`${moment.text} · ${moment.reason}`}>{moment.text} <span className="text-[#FDBB30]">· {moment.reason}</span></li>) : <li className="text-[#7f8b9a]">No clutch moments available.</li>}</ul></div>
+                <div className="sm:col-span-2">
+                  <h3 className="text-xs font-bold uppercase tracking-[0.08em] text-[#aeb8c6]">Clutch moments</h3>
+                  <ul className="mt-2 space-y-2 text-xs text-[#c3ccd8]">
+                    {clutchMoments.length ? clutchMoments.map((moment, index) => {
+                      const periodLabel = moment.period > 4 ? `OT${moment.period - 4}` : `Q${moment.period}`;
+                      const score = `${visitorTeamAbbreviation} ${moment.awayScore} - ${moment.homeScore} ${homeTeamAbbreviation}`;
+                      return (
+                        <li key={`clutch-${index}`} title={`${moment.text} · ${moment.reason}`}>
+                          <span>{moment.text}</span>
+                          <span className="ml-1 text-[#FDBB30]">· {moment.reason}</span>
+                          <span className="block text-[11px] text-[#7f8b9a]">{periodLabel} · {formatGameClock(moment.clock)} remaining · {score}</span>
+                        </li>
+                      );
+                    }) : <li className="text-[#7f8b9a]">No clutch moments available.</li>}
+                  </ul>
+                </div>
               </div>
             </>}
             {probabilityGraph}

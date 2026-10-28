@@ -41,6 +41,50 @@ const timed = async <T,>(label: string, task: Promise<T>) => {
   }
 };
 
+const CACHE_LOCK_SECONDS = 45;
+const CACHE_LOCK_POLL_MS = 500;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Single-flight cache fill: one caller (across all posts) holds a Redis lock for up to 45s and
+// calls the API; everyone else polls the cache until the holder finishes.
+const withCacheLock = async <T,>(
+  cacheKey: string,
+  readCache: () => Promise<T | undefined>,
+  load: () => Promise<T>,
+): Promise<T> => {
+  const lockKey = `${cacheKey}:lock`;
+  const token = `${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  const deadline = Date.now() + CACHE_LOCK_SECONDS * 1000;
+  while (true) {
+    const acquired = await redis.set(lockKey, token, { nx: true, expiration: new Date(Date.now() + CACHE_LOCK_SECONDS * 1000) });
+    if (acquired) {
+      try {
+        const cached = await readCache();
+        if (cached !== undefined) return cached;
+        return await load();
+      } finally {
+        try {
+          if (await redis.get(lockKey) === token) await redis.del(lockKey);
+        } catch (error) {
+          console.warn(`Failed to release cache lock ${lockKey}:`, error);
+        }
+      }
+    }
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for cache lock ${lockKey}`);
+    await sleep(CACHE_LOCK_POLL_MS);
+    const cached = await readCache();
+    if (cached !== undefined) {
+      console.log(`[thread-cache] hit after waiting on lock ${lockKey}`);
+      return cached;
+    }
+  }
+};
+
+const readJsonCache = async <T,>(key: string) => {
+  const value = await redis.get(key);
+  return value ? JSON.parse(value) as T : undefined;
+};
+
 const durationSeconds = (duration: string | null) => {
   const match = duration?.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?/);
   return match ? Number(match[1] ?? 0) * 3600 + Number(match[2] ?? 0) * 60 + Number(match[3] ?? 0) : 0;
@@ -105,7 +149,24 @@ const refreshWinProbabilityInBackground = (gameId: string, boxScore: Awaited<Ret
   const now = Date.now();
   if (now - (winProbabilityRefreshAt.get(gameId) ?? 0) < 30_000) return;
   winProbabilityRefreshAt.set(gameId, now);
-  void recordWinProbability(gameId, boxScore);
+  const lockKey = `${winProbabilityTimelineKey(gameId)}:refresh-lock`;
+  void (async () => {
+    try {
+      const acquired = await redis.set(lockKey, String(now), {
+        nx: true,
+        expiration: new Date(Date.now() + CACHE_LOCK_SECONDS * 1000),
+      });
+      if (!acquired) {
+        console.log(`[win-probability] refresh skipped; distributed lock held game=${gameId}`);
+        return;
+      }
+
+      // Keep the lock until its TTL expires to throttle later refreshes across server instances.
+      await recordWinProbability(gameId, boxScore);
+    } catch (error) {
+      console.warn(`Win probability refresh lock failed for game ${gameId}:`, error);
+    }
+  })();
 };
 
 export const api = new Hono();
@@ -140,11 +201,14 @@ api.get('/thread/play-by-play', async (c) => {
       }
     }
 
-    const playByPlay = isTestFixture
-      ? testPlayByPlay
-      : await timed('playbyplay-deferred', cavsBotApi.playByPlay(gameId));
-    await redis.set(cacheKey, JSON.stringify(playByPlay));
-    await redis.expire(cacheKey, coreCacheTtlSeconds(threadType));
+    const playByPlay = await withCacheLock(cacheKey, () => readJsonCache<unknown>(cacheKey), async () => {
+      const fresh = isTestFixture
+        ? testPlayByPlay
+        : await timed('playbyplay-deferred', cavsBotApi.playByPlay(gameId));
+      await redis.set(cacheKey, JSON.stringify(fresh));
+      await redis.expire(cacheKey, coreCacheTtlSeconds(threadType));
+      return fresh;
+    });
     return c.json({ playByPlay });
   } catch (error) {
     console.error(`Deferred play-by-play error for game ${gameId}:`, error);
@@ -174,42 +238,45 @@ api.get('/thread/core', async (c) => {
     if (cachedFull) {
       console.log(`[thread-cache] hit ${fullCacheKey}`);
       const cachedResponse = JSON.parse(cachedFull) as Record<string, unknown>;
-      if (!summaryOnly && (threadType === 'game' || threadType === 'post-game') && cachedResponse.boxScore) {
+      if ((threadType === 'game' || threadType === 'post-game') && cachedResponse.boxScore) {
         const boxScore = cachedResponse.boxScore as Awaited<ReturnType<typeof cavsBotApi.boxScore>>;
         refreshWinProbabilityInBackground(gameId, boxScore);
       }
-      const winProbability = summaryOnly ? [] : await readWinProbabilityTimeline(gameId);
+      const winProbability = await readWinProbabilityTimeline(gameId);
       return c.json({ ...responseForClient(cachedResponse), winProbability, insightsReady: true });
     }
     if (cached) {
       console.log(`[thread-cache] hit ${cacheKey}`);
       const cachedResponse = JSON.parse(cached) as Record<string, unknown>;
-      if (!summaryOnly && (threadType === 'game' || threadType === 'post-game') && cachedResponse.boxScore) {
+      if ((threadType === 'game' || threadType === 'post-game') && cachedResponse.boxScore) {
         const boxScore = cachedResponse.boxScore as Awaited<ReturnType<typeof cavsBotApi.boxScore>>;
         refreshWinProbabilityInBackground(gameId, boxScore);
       }
-      const winProbability = summaryOnly ? [] : await readWinProbabilityTimeline(gameId);
+      const winProbability = await readWinProbabilityTimeline(gameId);
       return c.json({ ...responseForClient(cachedResponse), winProbability, insightsReady: false });
     }
     console.log(`[thread-cache] miss ${cacheKey}`);
-    const [boxScore, playByPlay, game] = await Promise.all([
-      timed('boxscore', isTestFixture ? cavsBotApi.boxScore(gameId).catch(() => testBoxScore) : cavsBotApi.boxScore(gameId)),
-      summaryOnly ? Promise.resolve([] as typeof testPlayByPlay) : timed('playbyplay', isTestFixture ? cavsBotApi.playByPlay(gameId).catch(() => testPlayByPlay) : cavsBotApi.playByPlay(gameId)),
-      timed('game', isTestFixture ? cavsBotApi.game(gameId).catch(() => testGame) : cavsBotApi.game(gameId)),
-    ]);
-    if (!summaryOnly && (threadType === 'game' || threadType === 'post-game')) refreshWinProbabilityInBackground(gameId, boxScore);
-    const winProbability = await readWinProbabilityTimeline(gameId);
-    const response = { gameId, threadType, seasonType: postData?.seasonType ?? 2, boxScore, playByPlay, game, records: { visitor: null, home: null }, standings: [], recentForm: [], matchups: [], fourFactors: null, winProbability, insightsReady: false, fetchedAt: new Date().toISOString() };
-    try {
-      if (await redis.get(threadCacheGenerationKey(gameId, threadType)) !== generation) {
-        console.log(`[thread-cache] discarded stale core response ${cacheKey}`);
-      } else {
-        await redis.set(cacheKey, JSON.stringify(response));
-        await redis.expire(cacheKey, coreCacheTtlSeconds(threadType));
+    const response = await withCacheLock<Record<string, unknown>>(cacheKey, () => readJsonCache<Record<string, unknown>>(cacheKey), async () => {
+      const [boxScore, playByPlay, game] = await Promise.all([
+        timed('boxscore', isTestFixture ? cavsBotApi.boxScore(gameId).catch(() => testBoxScore) : cavsBotApi.boxScore(gameId)),
+        summaryOnly ? Promise.resolve([] as typeof testPlayByPlay) : timed('playbyplay', isTestFixture ? cavsBotApi.playByPlay(gameId).catch(() => testPlayByPlay) : cavsBotApi.playByPlay(gameId)),
+        timed('game', isTestFixture ? cavsBotApi.game(gameId).catch(() => testGame) : cavsBotApi.game(gameId)),
+      ]);
+      if (threadType === 'game' || threadType === 'post-game') refreshWinProbabilityInBackground(gameId, boxScore);
+      const winProbability = await readWinProbabilityTimeline(gameId);
+      const fresh = { gameId, threadType, seasonType: postData?.seasonType ?? 2, boxScore, playByPlay, game, records: { visitor: null, home: null }, standings: [], recentForm: [], matchups: [], fourFactors: null, winProbability, insightsReady: false, fetchedAt: new Date().toISOString() };
+      try {
+        if (await redis.get(threadCacheGenerationKey(gameId, threadType)) !== generation) {
+          console.log(`[thread-cache] discarded stale core response ${cacheKey}`);
+        } else {
+          await redis.set(cacheKey, JSON.stringify(fresh));
+          await redis.expire(cacheKey, coreCacheTtlSeconds(threadType));
+        }
+      } catch (error) {
+        console.warn(`Thread core cache write failed for game ${gameId}:`, error);
       }
-    } catch (error) {
-      console.warn(`Thread core cache write failed for game ${gameId}:`, error);
-    }
+      return fresh;
+    });
     return c.json(responseForClient(response));
   } catch (error) {
     console.error(`Thread core data error for game ${gameId}:`, error);
@@ -237,6 +304,10 @@ api.get('/thread/insights', async (c) => {
       return c.json({ ...JSON.parse(cached), insightsReady: true });
     }
     console.log(`[thread-cache] miss ${cacheKey}`);
+    const insightsResponse = await withCacheLock<Record<string, unknown>>(cacheKey, async () => {
+      const hit = await readJsonCache<Record<string, unknown>>(cacheKey);
+      return hit && { ...hit, insightsReady: true };
+    }, async () => {
     const matchupSeasonType = postData?.seasonType === 2 || postData?.seasonType === 3 ? 3 : undefined;
     const pastMatchups = (team: string, opponent: string) => cavsBotApi.request<typeof testGame[]>(`/api/v1/teams/${encodeURIComponent(team)}/matchups/${encodeURIComponent(opponent)}/past`, { count: 10, seasonType: matchupSeasonType });
     const requestedClevelandTeamId = Number(c.req.query('clevelandTeamId'));
@@ -261,7 +332,9 @@ api.get('/thread/insights', async (c) => {
     } catch (error) {
       console.warn(`Thread insights cache write failed for game ${gameId}:`, error);
     }
-    return c.json(response);
+    return response;
+    });
+    return c.json(insightsResponse);
   } catch (error) {
     console.error(`Thread insights error for game ${gameId}:`, error);
     return c.json<ErrorResponse>({ status: 'error', message: 'Unable to load game insights' }, 502);
@@ -296,6 +369,9 @@ api.get('/thread/insight', async (c) => {
       return c.json(JSON.parse(cached));
     }
     console.log(`[thread-cache] miss ${sectionCacheKey}`);
+    const clevelandTeamId = Number(c.req.query('clevelandTeamId'));
+    if (section === 'four-factors' && (!Number.isInteger(clevelandTeamId) || (clevelandTeamId !== visitorTeamId && clevelandTeamId !== homeTeamId))) return c.json<ErrorResponse>({ status: 'error', message: 'Cleveland team id is required' }, 400);
+    const response = await withCacheLock<Record<string, unknown>>(sectionCacheKey, () => readJsonCache<Record<string, unknown>>(sectionCacheKey), async () => {
     const generation = await redis.get(threadCacheGenerationKey(gameId, threadType));
     const matchupSeasonType = postData?.seasonType === 2 || postData?.seasonType === 3 ? 3 : undefined;
     const gameSeason = c.req.query('season') ?? '2025-26';
@@ -318,8 +394,6 @@ api.get('/thread/insight', async (c) => {
         : cavsBotApi.request<typeof testGame[]>(`/api/v1/teams/${encodeURIComponent(visitorTeam)}/matchups/${encodeURIComponent(homeTeam)}/past`, { count: 10, seasonType: matchupSeasonType }));
       response = { matchups: matchups.filter((matchup) => matchup.seasonType !== 2) };
     } else {
-      const clevelandTeamId = Number(c.req.query('clevelandTeamId'));
-      if (!Number.isInteger(clevelandTeamId) || (clevelandTeamId !== visitorTeamId && clevelandTeamId !== homeTeamId)) return c.json<ErrorResponse>({ status: 'error', message: 'Cleveland team id is required' }, 400);
       const [opponent, cavaliers] = await Promise.all([
         timed(`four-factors-${visitorTeamId}`, isTestFixture ? cavsBotApi.teamFourFactors(String(visitorTeamId), { season: gameSeason }).catch(() => null) : cavsBotApi.teamFourFactors(String(visitorTeamId), { season: gameSeason })),
         timed(`four-factors-${homeTeamId}`, isTestFixture ? cavsBotApi.teamFourFactors(String(homeTeamId), { season: gameSeason }).catch(() => null) : cavsBotApi.teamFourFactors(String(homeTeamId), { season: gameSeason })),
@@ -332,6 +406,8 @@ api.get('/thread/insight', async (c) => {
       await redis.set(sectionCacheKey, JSON.stringify(response));
       await redis.expire(sectionCacheKey, insightCacheTtlSeconds(threadType));
     }
+    return response;
+    });
     return c.json(response);
   } catch (error) {
     console.error(`Thread insight section ${section} failed for game ${gameId}:`, error);

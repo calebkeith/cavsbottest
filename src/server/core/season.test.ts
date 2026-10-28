@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ScheduleGameResponse } from './cavs-api.ts';
-import { nextScheduledGame } from './season.ts';
+import { nextScheduledGame, seasonTitleSuffix } from './season.ts';
 
 const game = (gameId: string, startTime: string) => ({ gameId, startTime } as ScheduleGameResponse);
 
@@ -13,4 +13,9 @@ void test('selects the next scheduled game using Eastern schedule timestamps', (
   ], Date.parse('2026-10-22T22:00:00Z'));
 
   assert.equal(selected?.gameId, 'next');
+});
+
+void test('omits regular season from thread titles while retaining postseason', () => {
+  assert.equal(seasonTitleSuffix(3), '');
+  assert.equal(seasonTitleSuffix(1), ' - Postseason');
 });

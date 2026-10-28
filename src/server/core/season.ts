@@ -24,3 +24,6 @@ export const seasonTypeLabel = (seasonType: number) => {
   if (seasonType === POSTSEASON) return 'Postseason';
   return 'Regular Season';
 };
+
+export const seasonTitleSuffix = (seasonType: number) =>
+  seasonType === REGULAR_SEASON ? '' : ` - ${seasonTypeLabel(seasonType)}`;

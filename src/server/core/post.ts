@@ -1,7 +1,7 @@
 import { reddit, redis } from '@devvit/web/server';
 import { EntrypointHeight } from '@devvit/protos/json/reddit/devvit/post/v1/post.js';
 import { cavsBotApi, type BoxScoreResponse, type ScheduleGameResponse } from './cavs-api';
-import { nextScheduledGame, SEASON_TYPES, seasonTypeLabel } from './season';
+import { nextScheduledGame, seasonTitleSuffix, SEASON_TYPES } from './season';
 import { testBoxScore } from './test-game';
 import { parseEasternTime } from '../../shared/time';
 
@@ -28,8 +28,6 @@ const formatParts = (formatter: Intl.DateTimeFormat, date: Date) => {
     ? `${parts.month}/${parts.day}/${parts.year}`
     : `${parts.month}/${parts.day}/${parts.year} ${parts.hour}:${parts.minute} ${parts.dayPeriod}`;
 };
-
-const seasonLabel = (seasonType: number) => ` - ${seasonTypeLabel(seasonType)}`;
 
 const formatMinutes = (minutes: string) => {
   const match = minutes.match(/PT(?:(\d+)H)?(?:(\d+)M)?/);
@@ -104,7 +102,7 @@ const scoreLine = (boxScore?: BoxScoreResponse) => {
 };
 
 const gameThreadText = (game: ScheduleGameResponse, boxScore?: BoxScoreResponse) => [
-  `# Live Cavaliers Game Thread${seasonLabel(game.seasonType)}`,
+  `# Live Cavaliers Game Thread${seasonTitleSuffix(game.seasonType)}`,
   '',
   `**${matchup(game)}**`,
   '',
@@ -117,7 +115,7 @@ const gameThreadText = (game: ScheduleGameResponse, boxScore?: BoxScoreResponse)
 ].join('\n');
 
 const postGameText = (game: ScheduleGameResponse, boxScore: BoxScoreResponse) => [
-  `# Post-Game Cavaliers Discussion${seasonLabel(game.seasonType)}`,
+  `# Post-Game Cavaliers Discussion${seasonTitleSuffix(game.seasonType)}`,
   '',
   `**${matchup(game)}**`,
   '',
@@ -130,7 +128,7 @@ const postGameText = (game: ScheduleGameResponse, boxScore: BoxScoreResponse) =>
 ].join('\n');
 
 const nextDayText = (game: ScheduleGameResponse, boxScore: BoxScoreResponse) => [
-  `# Next-Day Cavaliers Discussion${seasonLabel(game.seasonType)}`,
+  `# Next-Day Cavaliers Discussion${seasonTitleSuffix(game.seasonType)}`,
   '',
   `**${matchup(game)}**`,
   '',
@@ -142,7 +140,7 @@ const nextDayText = (game: ScheduleGameResponse, boxScore: BoxScoreResponse) => 
 ].join('\n');
 
 const gameDayText = (game: ScheduleGameResponse) => [
-  `# Cavaliers Game Day${seasonLabel(game.seasonType)}`,
+  `# Cavaliers Game Day${seasonTitleSuffix(game.seasonType)}`,
   '',
   `**${matchup(game)}**`,
   '',
@@ -200,7 +198,7 @@ export const createGameThread = async (game: ScheduleGameResponse, testFixture =
       ? testBoxScore
       : await cavsBotApi.boxScore(game.gameId).catch(() => undefined);
     const post = await reddit.submitCustomPost({
-      title: `[Game Thread${seasonLabel(game.seasonType)}] ${matchup(game)} [${formatParts(easternDateTime, parseEasternTime(game.startTime))} ET]`,
+      title: `[Game Thread${seasonTitleSuffix(game.seasonType)}] ${matchup(game)} [${formatParts(easternDateTime, parseEasternTime(game.startTime))} ET]`,
       entry: 'default',
       postData: { gameId: game.gameId, threadType: 'game', seasonType: game.seasonType, testFixture },
       textFallback: { text: gameThreadText(game, initialBoxScore) },
@@ -224,7 +222,7 @@ export const createPostGameThread = async (game: ScheduleGameResponse, boxScore:
   if (!game.gameId || !(await reserveThread(game.gameId, 'post-game'))) return null;
   try {
     const post = await reddit.submitCustomPost({
-      title: `[Post Game Thread${seasonLabel(game.seasonType)}] ${matchup(game)} [${formatParts(easternDate, parseEasternTime(game.startTime))}]`,
+      title: `[Post Game Thread${seasonTitleSuffix(game.seasonType)}] ${matchup(game)} [${formatParts(easternDate, parseEasternTime(game.startTime))}]`,
       entry: 'default',
       postData: { gameId: game.gameId, threadType: 'post-game', seasonType: game.seasonType, isAvailable: boxScore.isAvailable, testFixture },
       textFallback: { text: postGameText(game, boxScore) },
@@ -247,7 +245,7 @@ export const createNextDayDiscussionThread = async (game: ScheduleGameResponse, 
   if (!game.gameId || !(await reserveThread(game.gameId, 'next-day'))) return null;
   try {
     const post = await reddit.submitCustomPost({
-      title: `[Next Day Discussion${seasonLabel(game.seasonType)}] ${matchup(game)} [${formatParts(easternDate, parseEasternTime(game.startTime))}]`,
+      title: `[Next Day Discussion${seasonTitleSuffix(game.seasonType)}] ${matchup(game)} [${formatParts(easternDate, parseEasternTime(game.startTime))}]`,
       entry: 'default',
       postData: { gameId: game.gameId, threadType: 'next-day', seasonType: game.seasonType, isAvailable: boxScore.isAvailable, testFixture },
       textFallback: { text: nextDayText(game, boxScore) },
@@ -270,7 +268,7 @@ export const createGameDayThread = async (game: ScheduleGameResponse, testFixtur
   if (!game.gameId || !(await reserveThread(game.gameId, 'game-day'))) return null;
   try {
     const post = await reddit.submitCustomPost({
-      title: `[Game Day Thread${seasonLabel(game.seasonType)}] ${matchup(game)} [${formatParts(easternDateTime, parseEasternTime(game.startTime))} ET]`,
+      title: `[Game Day Thread${seasonTitleSuffix(game.seasonType)}] ${matchup(game)} [${formatParts(easternDateTime, parseEasternTime(game.startTime))} ET]`,
       entry: 'default',
       postData: { gameId: game.gameId, threadType: 'game-day', seasonType: game.seasonType, testFixture },
       textFallback: { text: gameDayText(game) },
